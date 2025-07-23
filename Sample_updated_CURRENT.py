@@ -12,13 +12,15 @@ import socket
 import urllib.error
 import urllib.request
 import time
+import zipfile
+import tempfile
 
 # Load environment variables
 load_dotenv()
 
 # --- Configuration File for Gemini Sequence ---
 GEMINI_SEQUENCE_CONFIG_FILE = "gemini_sequence_config.json"
-DEFAULT_GEMINI_MODEL_SEQUENCE = ["gemini-2.5-pro-exp-03-25", "gemini-2.0-flash", "gemini-1.5-pro"]
+DEFAULT_GEMINI_MODEL_SEQUENCE = ["gemini-1.5-pro-latest", "gemini-1.5-flash-latest"]
     
 def load_gemini_sequence():
     if os.path.exists(GEMINI_SEQUENCE_CONFIG_FILE):
@@ -86,11 +88,14 @@ def load_configuration():
     conn = get_connection()
     try:
         cursor = conn.cursor()
-        cursor.execute("SELECT gemini_model_sequence FROM app_config_admin ORDER BY id LIMIT 1")
+        cursor.execute("SELECT gemini_model_sequence, temperature FROM app_config_admin ORDER BY id LIMIT 1")
         row = cursor.fetchone()
         if row:
             st.session_state["app_config"]["gemini_model_sequence"] = json.loads(row[0])
             st.session_state["app_config"]["selected_model"] = st.session_state["app_config"]["gemini_model_sequence"][0]
+            # Load temperature if present
+            if len(row) > 1 and row[1] is not None:
+                st.session_state["app_config"]["temperature"] = float(row[1])
         else:
             st.session_state["app_config"]["gemini_model_sequence"] = DEFAULT_GEMINI_MODEL_SEQUENCE
             st.session_state["app_config"]["selected_model"] = DEFAULT_GEMINI_MODEL_SEQUENCE[0]
@@ -107,11 +112,12 @@ def save_configuration():
         cursor.execute(
             """
             UPDATE app_config_admin
-            SET gemini_model_sequence = %s
+            SET gemini_model_sequence = %s, temperature = %s
             WHERE id = (SELECT id FROM app_config_admin ORDER BY id LIMIT 1)
             """,
             (
                 json.dumps(st.session_state["app_config"]["gemini_model_sequence"]),
+                st.session_state["app_config"].get("temperature", 0.5)
             )
         )
         conn.commit()
@@ -790,26 +796,28 @@ def get_available_gemini_models():
             if not api_key:
                 st.warning("⚠️ No API key available. Using default model list.")
                 # Return a default list as fallback
-                return ["gemini-2.5-pro-exp-03-25", "gemini-2.0-pro", "gemini-1.5-pro", "gemini-2.0-flash"]
+                return ["gemini-1.5-pro-latest", "gemini-1.5-flash-latest"]
         
         # Configure the API with the available key
         genai.configure(api_key=api_key)
         
         # Get list of available models
         models = genai.list_models()
-        # Filter for only Gemini models
-        gemini_models = [model.name.split('/')[-1] for model in models if 'gemini' in model.name.lower()]
-        
+        # Filter for only Gemini models that support generateContent
+        gemini_models = [
+            model.name.split('/')[-1]
+            for model in models
+            if 'gemini' in model.name.lower() and getattr(model, "supported_generation_methods", None) and "generateContent" in model.supported_generation_methods
+        ]
         if not gemini_models:
             st.warning("⚠️ No Gemini models found. Using default model list.")
-            return ["gemini-2.5-pro-exp-03-25", "gemini-2.0-pro", "gemini-1.5-pro", "gemini-2.0-flash"]
-        
+            return ["gemini-1.5-pro-latest", "gemini-1.5-flash-latest"]
         return gemini_models
    
     except Exception as e:
         st.error(f"❌ Error fetching Gemini models: {e}")
         # Return a default list as fallback
-        return ["gemini-2.5-pro-exp-03-25", "gemini-2.0-pro", "gemini-1.5-pro", "gemini-2.0-flash"]
+        return ["gemini-1.5-pro-latest", "gemini-1.5-flash-latest"]
     
 def admin_ui():
     st.title("⚙️ Admin Panel")
@@ -1091,22 +1099,8 @@ def user_ui():
     with st.sidebar:
         st.subheader(f"👤 User: {st.session_state['user']['email']}")
         st.info("ℹ Using admin-configured settings")
-
-        # Display current configuration (read-only)
-        st.markdown("### Current Configuration")
-        config = st.session_state["app_config"]
-        st.markdown(f"- **Model Provider:** {config['model_provider']}")
-        if config["model_provider"] == "Google Gemini":
-            st.markdown(f"- **Gemini Model Sequence:** {', '.join(config['gemini_model_sequence'])}")
-        else:
-            st.markdown(f"- **DeepSeek Model:** {config['ollama_model']}")
-        st.markdown(f"- **Input Folder:** {config['input_folder']}")
-        st.markdown(f"- **Output Folder:** {config['output_folder']}")
-        st.markdown(f"- **Completed Folder:** {config['completed_folder']}")
-
         if st.button("Change Password"):
             st.session_state["show_change_password"] = True
-
         if st.button("Logout"):
             logout()
             return
@@ -1125,68 +1119,36 @@ def user_ui():
                 else:
                     st.error("New passwords don't match!")
     else:
+        st.markdown("---")
         st.subheader("📂 Folder Configuration")
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.session_state["app_config"]["input_folder"] = st.text_input(
-                "Input Folder Path",
-                st.session_state["app_config"]["input_folder"]
-            )
+            st.write("Input Folder Path")
+            input_folder = st.text_input("", st.session_state["app_config"].get("input_folder", ""), key="input_folder_path")
         with col2:
-            st.session_state["app_config"]["output_folder"] = st.text_input(
-                "Output Folder Path",
-                st.session_state["app_config"]["output_folder"]
-            )
+            st.write("Output Folder Path")
+            output_folder = st.text_input("", st.session_state["app_config"].get("output_folder", ""), key="output_folder_path")
         with col3:
-            st.session_state["app_config"]["completed_folder"] = st.text_input(
-                "Completed Files Folder",
-                st.session_state["app_config"]["completed_folder"]
-            )
-
+            st.write("Completed Files Folder")
+            completed_folder = st.text_input("", st.session_state["app_config"].get("completed_folder", ""), key="completed_folder_path")
         if st.button("Save Settings"):
-            if st.session_state["user"] and st.session_state["user"]["email"]:
-                conn = get_connection()
-                if conn:
-                    cursor = conn.cursor()
-                    try:
-                        cursor.execute(
-                            "UPDATE user_api_keys SET input_folder_path = %s, output_folder_path = %s, completed_folder_path = %s WHERE email = %s",
-                            (
-                                st.session_state["app_config"]["input_folder"],
-                                st.session_state["app_config"]["output_folder"],
-                                st.session_state["app_config"]["completed_folder"],
-                                st.session_state["user"]["email"],
-                            ),
-                        )
-                        conn.commit()
-                        st.success("💾 Folder settings saved!")
-                    except Exception as e:
-                        st.error(f"❌ Error saving folder settings: {e}")
-                    finally:
-                        cursor.close()
-                        conn.close()
-                else:
-                    st.error("❌ Could not connect to the database to save settings.")
-            else:
-                st.error("⚠️ User information not found. Cannot save settings.")
+            st.session_state["app_config"]["input_folder"] = input_folder
+            st.session_state["app_config"]["output_folder"] = output_folder
+            st.session_state["app_config"]["completed_folder"] = completed_folder
+            st.success("✅ Folder configuration saved!")
 
         st.markdown("---")
-
-        # File upload and folder processing options
         processing_mode = st.radio(
             "Select Processing Mode:",
-            ["Upload Single File", "Process Folder"],
+            ["Upload Single File", "Upload Zip of Files"],
             index=0
         )
         uploaded_file = None
+        uploaded_zip = None
         if processing_mode == "Upload Single File":
-            uploaded_file = st.file_uploader("📥 Upload an HTML or TXT file", type=["htm", "html", "txt"])  # Added "txt" type
-        else:  # Process Folder
-            input_folder = st.session_state["app_config"]["input_folder"]
-            st.info(f"🔍 Using configured input folder: {input_folder}")
-            if not input_folder or not os.path.exists(input_folder):
-                st.error("❌ Invalid input folder path! Please contact admin.")
-                return
+            uploaded_file = st.file_uploader("📥 Upload an HTML or TXT file", type=["htm", "html", "txt"])
+        else:
+            uploaded_zip = st.file_uploader("📦 Upload a ZIP file containing HTML/TXT files", type=["zip"])
 
         st.subheader("🌡️ Temperature Control")
         st.warning(
@@ -1228,29 +1190,27 @@ def user_ui():
         if processing_mode == "Upload Single File":
             if st.button("🚀 Analyze Document"):
                 if uploaded_file is None:
-                    st.error("⚠️ Please upload an HTML or TXT file before analyzing.")  # Updated message
+                    st.error("⚠️ Please upload an HTML or TXT file before analyzing.")
                 else:
                     try:
                         file_name = uploaded_file.name
                         file_content = uploaded_file.getvalue().decode("utf-8")
-
-                        # Create temp file in input folder
                         input_folder = st.session_state["app_config"]["input_folder"]
                         if not os.path.exists(input_folder):
                             os.makedirs(input_folder, exist_ok=True)
-
                         temp_path = os.path.join(input_folder, file_name)
                         with open(temp_path, "w", encoding="utf-8") as f:
                             f.write(file_content)
-
-                        response = process_html(temp_path, file_name, selected_questions)  # Changed to process_html
+                        response = process_html(temp_path, file_name, selected_questions)
                         if response:
                             st.success("✅ Analysis Complete!")
+                            st.text_area("Response", response, height=150, key="response_single_file")
                             st.download_button(
                                 label="📥 Download Response",
                                 data=response,
                                 file_name=f"{os.path.splitext(file_name)[0]}_response.txt",
-                                mime="text/plain"
+                                mime="text/plain",
+                                key="download_single_file"
                             )
                         else:
                             st.error("❌ Document analysis failed. See error messages above.")
@@ -1258,9 +1218,41 @@ def user_ui():
                         st.session_state["upload_error"] = True
                         st.error(f"❌ Error during file processing Try Again: {e}")
                         st.rerun()
-        elif processing_mode == "Process Folder":
-            if st.button("🚀 Process Folder"):  # Add a button for folder processing
-                process_folder(input_folder, selected_questions)
+        elif processing_mode == "Upload Zip of Files":
+            if st.button("🚀 Process Zip"):
+                if uploaded_zip is None:
+                    st.error("⚠️ Please upload a ZIP file before processing.")
+                else:
+                    process_zip_file(uploaded_zip, selected_questions)
+
+def process_zip_file(zip_file, selected_questions):
+    temp_dir = tempfile.mkdtemp()
+    try:
+        with zipfile.ZipFile(zip_file, 'r') as zip_ref:
+            zip_ref.extractall(temp_dir)
+        supported_files = []
+        for root, _, files in os.walk(temp_dir):
+            for file in files:
+                if file.lower().endswith((".htm", ".html", ".txt")):
+                    supported_files.append(os.path.join(root, file))
+        if not supported_files:
+            st.warning("⚠ No supported files (.html/.htm/.txt) found in the zip.")
+            return
+        for file_path in supported_files:
+            file_name = os.path.basename(file_path)
+            st.info(f"📄 Processing file: {file_name}")
+            response = process_html(file_path, file_name, selected_questions)
+            if response:
+                st.text_area(f"Response for {file_name}", response, height=150, key=f"response_{file_name}")
+                st.download_button(
+                    label=f"📥 Download Response for {file_name}",
+                    data=response,
+                    file_name=f"{os.path.splitext(file_name)[0]}_response.txt",
+                    mime="text/plain",
+                    key=f"download_{file_name}"
+                )
+    finally:
+        shutil.rmtree(temp_dir)
 
 def main():
 
