@@ -1241,22 +1241,42 @@ def process_zip_file(zip_file, selected_questions):
 
 import tempfile  # Make sure this is at the top
 
-def create_zip_and_download(output_folder, zip_label="📦 Download All Outputs as ZIP"):
-    # Collect all .txt files in the output folder
+def create_zip_and_download(output_folder, zip_label="📦 Download Responses as ZIP"):
     zip_buffer = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
-    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
+
+    # Define phrases that indicate a failed or invalid response
+    error_indicators = [
+        "❌", "⚠", "Error generating response", "quota", "not found", "failed to connect", 
+        "model", "invalid", "exception", "unavailable"
+    ]
+
+    with zipfile.ZipFile(zip_buffer.name, 'w', zipfile.ZIP_DEFLATED) as zipf:
         for root, _, files in os.walk(output_folder):
             for file in files:
                 if file.endswith(".txt"):
                     file_path = os.path.join(root, file)
+
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        content = f.read().strip()
+
+                    # ✅ Must start with a valid model header
+                    if not content.startswith("[Response from:"):
+                        continue
+
+                    # ✅ Must NOT contain any known error/warning phrases
+                    content_lower = content.lower()
+                    if any(err in content_lower for err in error_indicators):
+                        continue
+
+                    # ✅ Add only valid response content
                     arcname = os.path.relpath(file_path, output_folder)
-                    zipf.write(file_path, arcname=arcname)
+                    zipf.writestr(arcname, content)
 
     zip_buffer.seek(0)
     st.sidebar.download_button(
         label=zip_label,
         data=zip_buffer.read(),
-        file_name="processed_outputs.zip",
+        file_name="all_responsess.zip",
         mime="application/zip"
     )
 
