@@ -112,13 +112,12 @@ def save_configuration():
         cursor.execute(
             """
             UPDATE app_config_admin
-            SET gemini_model_sequence = %s, temperature = %s
+            SET gemini_model_sequence = %s
             WHERE id = (SELECT id FROM app_config_admin ORDER BY id LIMIT 1)
             """,
             (
                 json.dumps(st.session_state["app_config"]["gemini_model_sequence"]),
-                st.session_state["app_config"].get("temperature", 0.5)
-            )
+            )  # ← note the comma here
         )
         conn.commit()
         st.success("✅ Configuration saved to Supabase.")
@@ -187,6 +186,10 @@ def login(email, password):
                 st.session_state["user"]["api_key"] = None
         else:
             st.success(f"🔑 API Key fetched for {email}")
+
+        load_configuration()
+        st.session_state["model_sequence_inputs"] = st.session_state["app_config"]["gemini_model_sequence"] + [None]
+
 
         st.success("✅ Successfully logged in!")
         st.rerun()
@@ -1120,24 +1123,6 @@ def user_ui():
                     st.error("New passwords don't match!")
     else:
         st.markdown("---")
-        st.subheader("📂 Folder Configuration")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.write("Input Folder Path")
-            input_folder = st.text_input("", st.session_state["app_config"].get("input_folder", ""), key="input_folder_path")
-        with col2:
-            st.write("Output Folder Path")
-            output_folder = st.text_input("", st.session_state["app_config"].get("output_folder", ""), key="output_folder_path")
-        with col3:
-            st.write("Completed Files Folder")
-            completed_folder = st.text_input("", st.session_state["app_config"].get("completed_folder", ""), key="completed_folder_path")
-        if st.button("Save Settings"):
-            st.session_state["app_config"]["input_folder"] = input_folder
-            st.session_state["app_config"]["output_folder"] = output_folder
-            st.session_state["app_config"]["completed_folder"] = completed_folder
-            st.success("✅ Folder configuration saved!")
-
-        st.markdown("---")
         processing_mode = st.radio(
             "Select Processing Mode:",
             ["Upload Single File", "Upload Zip of Files"],
@@ -1254,6 +1239,29 @@ def process_zip_file(zip_file, selected_questions):
     finally:
         shutil.rmtree(temp_dir)
 
+import tempfile  # Make sure this is at the top
+
+def create_zip_and_download(output_folder, zip_label="📦 Download All Outputs as ZIP"):
+    # Collect all .txt files in the output folder
+    zip_buffer = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        for root, _, files in os.walk(output_folder):
+            for file in files:
+                if file.endswith(".txt"):
+                    file_path = os.path.join(root, file)
+                    arcname = os.path.relpath(file_path, output_folder)
+                    zipf.write(file_path, arcname=arcname)
+
+    zip_buffer.seek(0)
+    st.sidebar.download_button(
+        label=zip_label,
+        data=zip_buffer.read(),
+        file_name="processed_outputs.zip",
+        mime="application/zip"
+    )
+
+
+
 def main():
 
     if not st.session_state["logged_in"]:
@@ -1263,6 +1271,10 @@ def main():
             admin_ui()
         else:
             user_ui()
+    # Allow download of all outputs as a single ZIP
+    if st.session_state["app_config"]["output_folder"]:
+        create_zip_and_download(st.session_state["app_config"]["output_folder"])
+
 
 if __name__ == "__main__":
     main()
