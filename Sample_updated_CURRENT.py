@@ -112,13 +112,12 @@ def save_configuration():
         cursor.execute(
             """
             UPDATE app_config_admin
-            SET gemini_model_sequence = %s, temperature = %s
+            SET gemini_model_sequence = %s
             WHERE id = (SELECT id FROM app_config_admin ORDER BY id LIMIT 1)
             """,
             (
                 json.dumps(st.session_state["app_config"]["gemini_model_sequence"]),
-                st.session_state["app_config"].get("temperature", 0.5)
-            )
+            )  # ← note the comma here
         )
         conn.commit()
         st.success("✅ Configuration saved to Supabase.")
@@ -187,6 +186,10 @@ def login(email, password):
                 st.session_state["user"]["api_key"] = None
         else:
             st.success(f"🔑 API Key fetched for {email}")
+
+        load_configuration()
+        st.session_state["model_sequence_inputs"] = st.session_state["app_config"]["gemini_model_sequence"] + [None]
+
 
         st.success("✅ Successfully logged in!")
         st.rerun()
@@ -1121,14 +1124,11 @@ def user_ui():
     else:
         st.markdown("---")
         st.subheader("📂 Folder Configuration")
-        col1, col2, col3 = st.columns(3)
+        col1, col2= st.columns(2)
         with col1:
-            st.write("Input Folder Path")
-            input_folder = st.text_input("", st.session_state["app_config"].get("input_folder", ""), key="input_folder_path")
-        with col2:
             st.write("Output Folder Path")
             output_folder = st.text_input("", st.session_state["app_config"].get("output_folder", ""), key="output_folder_path")
-        with col3:
+        with col2:
             st.write("Completed Files Folder")
             completed_folder = st.text_input("", st.session_state["app_config"].get("completed_folder", ""), key="completed_folder_path")
         if st.button("Save Settings"):
