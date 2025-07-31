@@ -149,7 +149,7 @@ def login(email, password):
             st.error("❌ User not found.")
             return
 
-        db_api_key, db_role, db_password, input_path, output_path, completed_path = result
+        db_api_key, db_role, db_password, output_path, completed_path = result
 
         # Validate password (plain text check – hash it in production)
         if password != db_password:
