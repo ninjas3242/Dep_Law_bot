@@ -170,7 +170,7 @@ def login(email, password):
         st.session_state["user_role"] = db_role if db_role else "user"
 
         # Set folder paths
-        st.session_state["app_config"]["input_folder"] = input_path or "input_files"
+   
         st.session_state["app_config"]["output_folder"] = output_path or "output_files"
         st.session_state["app_config"]["completed_folder"] = completed_path or "completed_files"
         st.success(f"📁 Folder paths loaded for {email}")
