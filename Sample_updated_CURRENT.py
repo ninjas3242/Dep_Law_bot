@@ -139,7 +139,7 @@ def login(email, password):
 
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT api_key, role, password, input_folder_path, output_folder_path, completed_folder_path "
+            "SELECT api_key, role, password, output_folder_path, completed_folder_path "
             "FROM user_api_keys WHERE email = %s",
             (email,)
         )
