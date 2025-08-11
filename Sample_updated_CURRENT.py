@@ -1213,15 +1213,18 @@ def user_ui():
                 else:
                     try:
                         file_name = uploaded_file.name
-                        file_content = uploaded_file.getvalue().decode("utf-8")
-                        input_folder = st.session_state["app_config"]["input_folder"]
-                        if not os.path.exists(input_folder):
-                            os.makedirs(input_folder, exist_ok=True)
-                        temp_path = os.path.join(input_folder, file_name)
+                        try:
+                            file_content = uploaded_file.getvalue().decode("utf-8")
+                        except UnicodeDecodeError:
+                            file_content = uploaded_file.getvalue().decode("latin-1")
+                        
+                        # Save to a temporary location instead of input_folder
+                        temp_path = os.path.join(tempfile.gettempdir(), file_name)
                         with open(temp_path, "w", encoding="utf-8") as f:
                             f.write(file_content)
                         
                         result = process_html(temp_path, file_name, selected_questions)
+
                         if result:
                             response, clean_filename = result
                             st.success("✅ Analysis Complete!")
