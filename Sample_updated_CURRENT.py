@@ -27,10 +27,11 @@ def load_gemini_sequence():
         try:
             with open(GEMINI_SEQUENCE_CONFIG_FILE, "r") as f:
                 data = json.load(f)
-                return data.get("gemini_model_sequence", DEFAULT_GEMINI_MODEL_SEQUENCE)
+                return data.get("gemini_model_sequence")
         except (FileNotFoundError, json.JSONDecodeError):
-            return DEFAULT_GEMINI_MODEL_SEQUENCE
-    return DEFAULT_GEMINI_MODEL_SEQUENCE
+            return None  # Don't fall back to default
+    return None  # Don't fall back to default
+
 
 def save_gemini_sequence(sequence):
     data = {"gemini_model_sequence": sequence}
@@ -57,6 +58,7 @@ if "show_change_password" not in st.session_state:
 if "user_role" not in st.session_state:
     st.session_state["user_role"] = None
 if "app_config" not in st.session_state:
+    loaded_sequence = load_gemini_sequence()
     st.session_state["app_config"] = {
         "input_folder": "",
         "output_folder": "",
@@ -66,8 +68,14 @@ if "app_config" not in st.session_state:
         "gemini_api_key": "",
         "ollama_model": "deepseek-r1:1.5b",
         "temperature": 0.5,
-        "gemini_model_sequence": load_gemini_sequence() # Load sequence on app start
+        "gemini_model_sequence": loaded_sequence if loaded_sequence else []
+ # Load sequence on app start
     }
+    st.session_state["app_config"]["selected_model"] = (
+        st.session_state["app_config"]["gemini_model_sequence"][0]
+        if st.session_state["app_config"]["gemini_model_sequence"]
+        else None
+    )
     st.session_state["app_config"]["selected_model"] = st.session_state["app_config"]["gemini_model_sequence"][0] if st.session_state["app_config"]["gemini_model_sequence"] else None
 if "current_gemini_model_index" not in st.session_state:
     st.session_state["current_gemini_model_index"] = 0
@@ -88,7 +96,7 @@ def load_configuration():
     conn = get_connection()
     try:
         cursor = conn.cursor()
-        cursor.execute("SELECT gemini_model_sequence, temperature FROM app_config_admin ORDER BY id LIMIT 1")
+        cursor.execute("SELECT gemini_model_sequence FROM app_config_admin ORDER BY id LIMIT 1")
         row = cursor.fetchone()
         if row:
             st.session_state["app_config"]["gemini_model_sequence"] = json.loads(row[0])
@@ -97,8 +105,10 @@ def load_configuration():
             if len(row) > 1 and row[1] is not None:
                 st.session_state["app_config"]["temperature"] = float(row[1])
         else:
-            st.session_state["app_config"]["gemini_model_sequence"] = DEFAULT_GEMINI_MODEL_SEQUENCE
-            st.session_state["app_config"]["selected_model"] = DEFAULT_GEMINI_MODEL_SEQUENCE[0]
+            st.warning("⚠ No Gemini model sequence found in DB. Please set it manually.")
+            st.session_state["app_config"]["gemini_model_sequence"] = []
+            st.session_state["app_config"]["selected_model"] = None
+
     except Exception as e:
         st.error(f"❌ Failed to load admin config: {e}")
     finally:
@@ -298,6 +308,7 @@ def manage_user_api_keys():
     conn.close()
 
 def logout():
+    st.session_state["config_loaded"] = False
     st.session_state["user"] = None
     st.session_state["logged_in"] = False
     st.session_state["user_role"] = None
@@ -541,6 +552,11 @@ def read_txt_file(file_path):
         with open(file_path, "r", encoding="latin-1") as f:
             return f.read()
         
+
+
+# SOLUTION 1: Fix file naming in process_html function
+# Replace the existing process_html function with this updated version
+
 def process_html(file_path, file_name, selected_questions):
     if not check_internet_connection():
         st.error("❌ No internet connection. Cannot process file.")
@@ -556,8 +572,6 @@ def process_html(file_path, file_name, selected_questions):
     output_subfolder = output_folder
     if not os.path.exists(output_subfolder):
         os.makedirs(output_subfolder, exist_ok=True)
-
-
 
     # Determine file type and process accordingly
     file_extension = os.path.splitext(file_name)[1].lower()
@@ -594,20 +608,28 @@ def process_html(file_path, file_name, selected_questions):
         return None
 
     if response:
-        # Save .txt file
+        # FIXED: Remove prefixes like HN, YB etc. from filename
         base_name = os.path.splitext(file_name)[0]
-        name_part = base_name.split('_')[0]  # remove suffix part
-        if name_part.startswith("YB"):
-            extracted_name = name_part[2:]
-        elif name_part.startswith("HN"):
-            extracted_name = name_part[2:]
-        else:
-            extracted_name = name_part
+        
+        # Remove HN/YB prefix but keep the letter after it, then remove everything after underscore
+        import re
+        # Pattern: YBz11963_1005 -> z11963
+        cleaned_base = re.sub(r'^(HN|YB)([a-zA-Z]\d+)_.*', r'\2', base_name)
+        
+        # If no pattern match, try simpler pattern for cases without letter after prefix
+        if cleaned_base == base_name:
+            cleaned_base = re.sub(r'^[A-Z]{2}\d+_', '', base_name)
+        
+        # If still no change, use original name without extension
+        if cleaned_base == base_name:
+            cleaned_base = base_name
+            
+        txt_file_name = cleaned_base + ".txt"
 
-        txt_file_name = f"{extracted_name}.txt"
-        txt_file_path = os.path.join(output_subfolder, txt_file_name)
-        with open(txt_file_path, "w", encoding="utf-8") as txt_file:
-            txt_file.write(response)
+        # Save response to output folder
+        txt_output_path = os.path.join(output_subfolder, txt_file_name)
+        with open(txt_output_path, "w", encoding="utf-8") as f:
+            f.write(response)
 
         # Move processed file to completed folder
         if not os.path.exists(completed_folder):
@@ -620,12 +642,11 @@ def process_html(file_path, file_name, selected_questions):
         except Exception as e:
             st.error(f"❌ Error moving processed file: {e}")
 
-        return response
+        return response, txt_file_name  # Return both response and clean filename
     else:
         return None
 
-
-# New function to process HTML files within their folder structure
+# SOLUTION 2: Updated process_html_in_folder function
 def process_html_in_folder(file_path, file_name, selected_questions, destination_subfolder):
     if not check_internet_connection():
         st.error("❌ No internet connection. Cannot process HTML.")
@@ -677,26 +698,28 @@ def process_html_in_folder(file_path, file_name, selected_questions, destination
         return None
 
     if response:
-        base_name = os.path.splitext(file_name)[0]  # e.g., HN40169_31 or YBm67453_1002
+        # FIXED: Remove prefixes like HN, YB etc. from filename
+        base_name = os.path.splitext(file_name)[0]
+        
+        # Remove HN/YB prefix but keep the letter after it, then remove everything after underscore
+        import re
+        # Pattern: YBz11963_1005 -> z11963
+        cleaned_base = re.sub(r'^(HN|YB)([a-zA-Z]\d+)_.*', r'\2', base_name)
+        
+        # If no pattern match, try simpler pattern for cases without letter after prefix
+        if cleaned_base == base_name:
+            cleaned_base = re.sub(r'^[A-Z]{2}\d+_', '', base_name)
+        
+        # If still no change, use original name without extension
+        if cleaned_base == base_name:
+            cleaned_base = base_name
+            
+        txt_file_name = cleaned_base + ".txt"
 
-        # Remove suffix part (everything after the first underscore)
-        if "_" in base_name:
-            name_part = base_name.split('_')[0]  # Get part before first underscore
-        else:
-            name_part = base_name
-
-        # Now remove prefix if it exists
-        if name_part.startswith("YB"):
-            extracted_name = name_part[2:]  # Remove "YB"
-        elif name_part.startswith("HN"):
-            extracted_name = name_part[2:]  # Remove "HN"
-        else:
-            extracted_name = name_part
-
-        txt_file_name = f"{extracted_name}.txt"
-        txt_file_path = os.path.join(output_subfolder, txt_file_name)
-        with open(txt_file_path, "w", encoding="utf-8") as txt_file:
-            txt_file.write(response)
+        # Save response to output subfolder
+        txt_output_path = os.path.join(output_subfolder, txt_file_name)
+        with open(txt_output_path, "w", encoding="utf-8") as f:
+            f.write(response)
 
         # Move processed HTML file to completed subfolder instead of root completed folder
         try:
@@ -706,7 +729,7 @@ def process_html_in_folder(file_path, file_name, selected_questions, destination
         except Exception as e:
             st.error(f"❌ Error copying processed file: {e}")
 
-        return response
+        return response, txt_file_name  # Return both response and clean filename
     else:
         return None
     
@@ -1096,6 +1119,7 @@ def get_deepseek_questions():
             conn.close()
     return []
 
+# SOLUTION 3: Updated user_ui function with ordered question processing and moved ZIP download
 def user_ui():
     st.title("⚖ Document Analyzer")
 
@@ -1160,16 +1184,26 @@ def user_ui():
         else:
             questions = get_deepseek_questions()
 
-        # Display questions horizontally in columns
+        # FIXED: Store selected questions in order with their original indices
         cols = st.columns(4)  # Adjust the number of columns as needed
-        selected_questions = []
+        selected_questions_with_order = []  # Store (index, question_text) tuples
 
         for i, (q_id, question_text) in enumerate(questions):
             with cols[i % 4]:  # This will distribute questions across 4 columns
                 if st.checkbox(f"{q_id}", key=question_text):
-                    selected_questions.append(question_text)
+                    selected_questions_with_order.append((i, question_text))
+
+        # Sort by original index to maintain order
+        selected_questions_with_order.sort(key=lambda x: x[0])
+        selected_questions = [q[1] for q in selected_questions_with_order]  # Extract just the questions in order
 
         st.markdown("---")
+
+        # Initialize session state for tracking processed files
+        if "processed_files_count" not in st.session_state:
+            st.session_state["processed_files_count"] = 0
+        if "show_zip_download" not in st.session_state:
+            st.session_state["show_zip_download"] = False
 
         # Process based on mode
         if processing_mode == "Upload Single File":
@@ -1186,17 +1220,21 @@ def user_ui():
                         temp_path = os.path.join(input_folder, file_name)
                         with open(temp_path, "w", encoding="utf-8") as f:
                             f.write(file_content)
-                        response = process_html(temp_path, file_name, selected_questions)
-                        if response:
+                        
+                        result = process_html(temp_path, file_name, selected_questions)
+                        if result:
+                            response, clean_filename = result
                             st.success("✅ Analysis Complete!")
                             st.text_area("Response", response, height=150, key="response_single_file")
                             st.download_button(
                                 label="📥 Download Response",
                                 data=response,
-                                file_name=f"{os.path.splitext(file_name)[0]}_response.txt",
+                                file_name=clean_filename,  # Use cleaned filename
                                 mime="text/plain",
                                 key="download_single_file"
                             )
+                            st.session_state["processed_files_count"] += 1
+                            st.session_state["show_zip_download"] = True
                         else:
                             st.error("❌ Document analysis failed. See error messages above.")
                     except Exception as e:
@@ -1209,9 +1247,34 @@ def user_ui():
                     st.error("⚠️ Please upload a ZIP file before processing.")
                 else:
                     process_zip_file(uploaded_zip, selected_questions)
+                    st.session_state["show_zip_download"] = True
 
+        # MOVED: Show ZIP download button after processing (not in sidebar)
+        if st.session_state.get("show_zip_download", False) and st.session_state["app_config"]["output_folder"]:
+            st.markdown("---")
+            st.subheader("📦 Download All Responses")
+            
+            # Create download button in main area
+            zip_buffer = create_zip_and_download(st.session_state["app_config"]["output_folder"])
+            if zip_buffer:
+                st.download_button(
+                    label="📦 Download All Responses as ZIP",
+                    data=zip_buffer,
+                    file_name="all_responses.zip",
+                    mime="application/zip",
+                    key="main_zip_download"
+                )
+
+# SOLUTION 4: Updated process_zip_file function with ordered processing and clean filenames
 def process_zip_file(zip_file, selected_questions):
     temp_dir = tempfile.mkdtemp()
+    # 🔥 Clean output folder before new processing
+    output_folder = st.session_state["app_config"]["output_folder"]
+    if os.path.exists(output_folder):
+        for f in os.listdir(output_folder):
+            if f.endswith(".txt"):
+                os.remove(os.path.join(output_folder, f))
+
     try:
         with zipfile.ZipFile(zip_file, 'r') as zip_ref:
             zip_ref.extractall(temp_dir)
@@ -1223,74 +1286,103 @@ def process_zip_file(zip_file, selected_questions):
         if not supported_files:
             st.warning("⚠ No supported files (.html/.htm/.txt) found in the zip.")
             return
+        
         for file_path in supported_files:
-            file_name = os.path.basename(file_path)
-            st.info(f"📄 Processing file: {file_name}")
-            response = process_html(file_path, file_name, selected_questions)
-            if response:
-                st.text_area(f"Response for {file_name}", response, height=150, key=f"response_{file_name}")
+            original_name = os.path.basename(file_path)
+            st.info(f"📄 Processing file: {original_name}")
+            
+            result = process_html(file_path, original_name, selected_questions)
+            if result:
+                response, clean_filename = result
+                
+                # Create clean display name (remove HN/YB prefix but keep letter after it)
+                import re
+                # Pattern: YBz11963_1005.htm -> z11963.htm
+                display_name = re.sub(r'^(HN|YB)([a-zA-Z]\d+)_.*', r'\2', os.path.splitext(original_name)[0]) + os.path.splitext(original_name)[1]
+                
+                # # If no pattern match, try simpler pattern
+                # if display_name == original_name:
+                #     display_name = re.sub(r'^[A-Z]{2}\d+_', '', original_name)
+                
+                st.text_area(f"Response for {display_name}", response, height=150, key=f"response_{original_name}")
+                
+                # KEEP: Individual download button under each response with clean filename
                 st.download_button(
-                    label=f"📥 Download Response for {file_name}",
+                    label=f"📥 Download Response for {display_name}",
                     data=response,
-                    file_name=f"{os.path.splitext(file_name)[0]}_response.txt",
+                    file_name=clean_filename,  # Use cleaned filename
                     mime="text/plain",
-                    key=f"download_{file_name}"
+                    key=f"download_{original_name}"
                 )
+                
+                st.session_state["processed_files_count"] += 1
+                        
     finally:
         shutil.rmtree(temp_dir)
 
-import tempfile  # Make sure this is at the top
-
-def create_zip_and_download(output_folder, zip_label="📦 Download Responses as ZIP"):
-    zip_buffer = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
-
-    # Define phrases that indicate a failed or invalid response
+# SOLUTION 5: New function to create ZIP buffer (replaces create_zip_and_download)
+# SOLUTION 5: Updated function to replace create_zip_and_download
+def create_zip_and_download(output_folder):
+    """Create ZIP buffer for download without automatic sidebar placement"""
+    import io
+    
+    zip_buffer = io.BytesIO()
     error_indicators = [
         "❌", "⚠", "Error generating response", "quota", "not found", "failed to connect", 
         "model", "invalid", "exception", "unavailable"
     ]
 
-    with zipfile.ZipFile(zip_buffer.name, 'w', zipfile.ZIP_DEFLATED) as zipf:
-        for root, _, files in os.walk(output_folder):
-            for file in files:
-                if file.endswith(".txt"):
-                    file_path = os.path.join(root, file)
+    try:
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            files_added = 0
+            for root, _, files in os.walk(output_folder):
+                for file in files:
+                    if file.endswith(".txt"):
+                        file_path = os.path.join(root, file)
+                        try:
+                            with open(file_path, "r", encoding="utf-8") as f:
+                                content = f.read().strip()
 
-                    with open(file_path, "r", encoding="utf-8") as f:
-                        content = f.read().strip()
+                            # Validate content
+                            if not content.startswith("[Response from:"):
+                                continue
 
-                    # ✅ Must start with a valid model header
-                    if not content.startswith("[Response from:"):
-                        continue
+                            content_lower = content.lower()
+                            if any(err in content_lower for err in error_indicators):
+                                continue
 
-                    # ✅ Must NOT contain any known error/warning phrases
-                    content_lower = content.lower()
-                    if any(err in content_lower for err in error_indicators):
-                        continue
+                            # Add valid response content
+                            arcname = os.path.relpath(file_path, output_folder)
+                            zipf.writestr(arcname, content)
+                            files_added += 1
+                        except Exception as e:
+                            continue
+            
+            if files_added == 0:
+                return None
+                
+        zip_buffer.seek(0)
+        return zip_buffer.getvalue()
+    except Exception as e:
+        st.error(f"Error creating ZIP: {e}")
+        return None
 
-                    # ✅ Add only valid response content
-                    arcname = os.path.relpath(file_path, output_folder)
-                    zipf.writestr(arcname, content)
-
-    zip_buffer.seek(0)
-    st.sidebar.download_button(
-        label=zip_label,
-        data=zip_buffer.read(),
-        file_name="all_responsess.zip",
-        mime="application/zip"
-    )
-
-
-
+# SOLUTION 6: Updated main function (remove the old create_zip_and_download call)
 def main():
-
     if not st.session_state["logged_in"]:
         auth_section()
     else:
+        # ✅ Load config from Supabase on refresh after login
+        if "config_loaded" not in st.session_state:
+            load_configuration()
+            st.session_state["config_loaded"] = True  # Prevent loading it repeatedly
+
         if st.session_state["user_role"] == "admin":
             admin_ui()
         else:
             user_ui()
+
+
     # Allow download of all outputs as a single ZIP
     if st.session_state["app_config"]["output_folder"]:
         create_zip_and_download(st.session_state["app_config"]["output_folder"])
