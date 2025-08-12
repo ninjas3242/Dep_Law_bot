@@ -805,7 +805,7 @@ def process_folder(folder_path, selected_questions):
         progress_bar.progress((i + 1) / total_subfolders)
 
     st.success(f"✅ Successfully attempted to process {total_subfolders} subfolders. Moved {moved_subfolders_count} subfolders.")
-
+    
 
 def get_available_gemini_models():
     """Dynamically fetch available Gemini models from the Google Generative AI API."""
@@ -1217,12 +1217,12 @@ def user_ui():
                             file_content = uploaded_file.getvalue().decode("utf-8")
                         except UnicodeDecodeError:
                             file_content = uploaded_file.getvalue().decode("latin-1")
-                        
+
                         # Save to a temporary location instead of input_folder
                         temp_path = os.path.join(tempfile.gettempdir(), file_name)
                         with open(temp_path, "w", encoding="utf-8") as f:
                             f.write(file_content)
-                        
+
                         result = process_html(temp_path, file_name, selected_questions)
 
                         if result:
@@ -1319,9 +1319,12 @@ def process_zip_file(zip_file, selected_questions):
                 )
                 
                 st.session_state["processed_files_count"] += 1
-                        
+                
+       
     finally:
         shutil.rmtree(temp_dir)
+        st.success("🎉 Process Completed")
+
 
 # SOLUTION 5: New function to create ZIP buffer (replaces create_zip_and_download)
 # SOLUTION 5: Updated function to replace create_zip_and_download
