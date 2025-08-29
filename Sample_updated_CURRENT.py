@@ -1,4 +1,3 @@
-
 import streamlit as st
 import os
 import psycopg2
@@ -16,6 +15,7 @@ import urllib.request
 import time
 # Load environment variables
 load_dotenv()
+
 # Firebase Configuration
 firebase_config = {
     "apiKey": "AIzaSyCQVrVcKhUkE3e6PG6C_ewx-3ty9uj7eO0",
@@ -641,10 +641,10 @@ def process_html(file_path, file_name, selected_questions):
 
 
         base_name = os.path.splitext(file_name)[0]
-        # Use regex to remove HN or YB prefix, then _number suffix
-        match = re.match(r'^(HN|YB)(.*?)(?:_\d+)?$', base_name)
+        # Remove HN or YB prefix, then take everything up to the first underscore
+        match = re.match(r'^(HN|YB)([^_]+)', base_name)
         if match:
-            extracted_name = f"{match.group(2)}"
+            extracted_name = match.group(2)
         else:
             # fallback: remove _number suffix only
             extracted_name = re.sub(r'_\d+$', '', base_name)
@@ -726,10 +726,10 @@ def process_html_in_folder(file_path, file_name, selected_questions, destination
 
 
         base_name = os.path.splitext(file_name)[0]
-        # Use regex to remove HN or YB prefix, then _number suffix
-        match = re.match(r'^(HN|YB)(.*?)(?:_\d+)?$', base_name)
+        # Remove HN or YB prefix, then take everything up to the first underscore
+        match = re.match(r'^(HN|YB)([^_]+)', base_name)
         if match:
-            extracted_name = f"{match.group(2)}"
+            extracted_name = match.group(2)
         else:
             # fallback: remove _number suffix only
             extracted_name = re.sub(r'_\d+$', '', base_name)
@@ -1328,4 +1328,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
