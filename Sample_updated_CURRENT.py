@@ -2,7 +2,7 @@ import streamlit as st
 import os
 import psycopg2
 import shutil
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoupd
 import pyrebase
 import google.generativeai as genai
 import ollama
