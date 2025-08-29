@@ -502,6 +502,27 @@ def extract_text_from_html(html_content):
     text = ' '.join(text.split())
     return text
 
+def extract_filename(filename):
+    """Extract output filename according to legal document processing rules."""
+    # Remove file extension
+    name = filename.split('.')[0]
+    
+    # Find first underscore position
+    underscore_pos = name.find('_')
+    if underscore_pos == -1:
+        return name + '.txt'
+    
+    # Get part before underscore
+    before_underscore = name[:underscore_pos]
+    
+    # Remove YB or HN prefix if present
+    if before_underscore.startswith(('YB', 'HN')):
+        result = before_underscore[2:]
+    else:
+        result = before_underscore
+    
+    return result + '.txt'
+
 
 def generate_prompt(extracted_text, selected_questions):
     prompt = f"""
@@ -638,18 +659,7 @@ def process_html(file_path, file_name, selected_questions):
 
     if response:
         # Save .txt file
-
-
-        base_name = os.path.splitext(file_name)[0]
-        # Remove HN or YB prefix, then take everything up to the first underscore
-        match = re.match(r'^(HN|YB)([^_]+)', base_name)
-        if match:
-            extracted_name = match.group(2)
-        else:
-            # fallback: remove _number suffix only
-            extracted_name = re.sub(r'_\d+$', '', base_name)
-
-        txt_file_name = f"{extracted_name}.txt"
+        txt_file_name = extract_filename(file_name)
         txt_file_path = os.path.join(output_subfolder, txt_file_name)
         with open(txt_file_path, "w", encoding="utf-8") as txt_file:
             txt_file.write(response)
@@ -723,18 +733,7 @@ def process_html_in_folder(file_path, file_name, selected_questions, destination
 
 
     if response:
-
-
-        base_name = os.path.splitext(file_name)[0]
-        # Remove HN or YB prefix, then take everything up to the first underscore
-        match = re.match(r'^(HN|YB)([^_]+)', base_name)
-        if match:
-            extracted_name = match.group(2)
-        else:
-            # fallback: remove _number suffix only
-            extracted_name = re.sub(r'_\d+$', '', base_name)
-
-        txt_file_name = f"{extracted_name}.txt"
+        txt_file_name = extract_filename(file_name)
         txt_file_path = os.path.join(output_subfolder, txt_file_name)
         with open(txt_file_path, "w", encoding="utf-8") as txt_file:
             txt_file.write(response)
