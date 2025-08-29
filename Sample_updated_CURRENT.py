@@ -638,16 +638,12 @@ def process_html(file_path, file_name, selected_questions):
 
     if response:
         # Save .txt file
+
         base_name = os.path.splitext(file_name)[0]
         # Remove _number suffix
         name_part = re.sub(r'_\d+$', '', base_name)
-        # Remove HN or YB prefix only
-        if name_part.startswith('HN'):
-            extracted_name = name_part[2:]
-        elif name_part.startswith('YB'):
-            extracted_name = name_part[2:]
-        else:
-            extracted_name = name_part
+        # Remove HN or YB prefix ONLY, keep any characters after
+        extracted_name = re.sub(r'^(HN|YB)', '', name_part)
 
         txt_file_name = f"{extracted_name}.txt"
         txt_file_path = os.path.join(output_subfolder, txt_file_name)
@@ -723,16 +719,12 @@ def process_html_in_folder(file_path, file_name, selected_questions, destination
 
 
     if response:
+
         base_name = os.path.splitext(file_name)[0]
         # Remove _number suffix
         name_part = re.sub(r'_\d+$', '', base_name)
-        # Remove HN or YB prefix only
-        if name_part.startswith('HN'):
-            extracted_name = name_part[2:]
-        elif name_part.startswith('YB'):
-            extracted_name = name_part[2:]
-        else:
-            extracted_name = name_part
+        # Remove HN or YB prefix ONLY, keep any characters after
+        extracted_name = re.sub(r'^(HN|YB)', '', name_part)
 
         txt_file_name = f"{extracted_name}.txt"
         txt_file_path = os.path.join(output_subfolder, txt_file_name)
