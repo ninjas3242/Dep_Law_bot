@@ -639,11 +639,15 @@ def process_html(file_path, file_name, selected_questions):
     if response:
         # Save .txt file
 
+
         base_name = os.path.splitext(file_name)[0]
-        # Remove _number suffix
-        name_part = re.sub(r'_\d+$', '', base_name)
-        # Remove HN or YB prefix ONLY, keep any characters after
-        extracted_name = re.sub(r'^(HN|YB)', '', name_part)
+        # Use regex to remove HN or YB prefix, then _number suffix
+        match = re.match(r'^(HN|YB)(.*?)(?:_\d+)?$', base_name)
+        if match:
+            extracted_name = f"{match.group(2)}"
+        else:
+            # fallback: remove _number suffix only
+            extracted_name = re.sub(r'_\d+$', '', base_name)
 
         txt_file_name = f"{extracted_name}.txt"
         txt_file_path = os.path.join(output_subfolder, txt_file_name)
@@ -720,11 +724,15 @@ def process_html_in_folder(file_path, file_name, selected_questions, destination
 
     if response:
 
+
         base_name = os.path.splitext(file_name)[0]
-        # Remove _number suffix
-        name_part = re.sub(r'_\d+$', '', base_name)
-        # Remove HN or YB prefix ONLY, keep any characters after
-        extracted_name = re.sub(r'^(HN|YB)', '', name_part)
+        # Use regex to remove HN or YB prefix, then _number suffix
+        match = re.match(r'^(HN|YB)(.*?)(?:_\d+)?$', base_name)
+        if match:
+            extracted_name = f"{match.group(2)}"
+        else:
+            # fallback: remove _number suffix only
+            extracted_name = re.sub(r'_\d+$', '', base_name)
 
         txt_file_name = f"{extracted_name}.txt"
         txt_file_path = os.path.join(output_subfolder, txt_file_name)
