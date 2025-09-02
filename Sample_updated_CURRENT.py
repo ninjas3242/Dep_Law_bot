@@ -3,7 +3,6 @@ import os
 import psycopg2
 import shutil
 from bs4 import BeautifulSoup
-import pyrebase
 import google.generativeai as genai
 import ollama
 from dotenv import load_dotenv
@@ -13,39 +12,26 @@ import socket
 import urllib.error
 import urllib.request
 import time
+import zipfile
+import tempfile
+
 # Load environment variables
 load_dotenv()
 
-# Firebase Configuration
-firebase_config = {
-    "apiKey": "AIzaSyCQVrVcKhUkE3e6PG6C_ewx-3ty9uj7eO0",
-    "authDomain": "lawbot-11325.firebaseapp.com",
-    "projectId": "lawbot-11325",
-    "storageBucket": "lawbot-11325.firebasestorage.app",
-    "messagingSenderId": "770333510012",
-    "appId": "1:770333510012:web:ab44b10f59a148922dbcf9",
-    "measurementId": "G-32ZF3VXT5G",
-    "databaseURL": "https://lawbot-11325-default-rtdb.firebaseio.com/"
-}
-
-  
-firebase = pyrebase.initialize_app(firebase_config)
-auth = firebase.auth()
-db = firebase.database()
-
 # --- Configuration File for Gemini Sequence ---
 GEMINI_SEQUENCE_CONFIG_FILE = "gemini_sequence_config.json"
-DEFAULT_GEMINI_MODEL_SEQUENCE = ["gemini-2.5-pro-exp-03-25", "gemini-2.0-flash", "gemini-1.5-pro"]
+DEFAULT_GEMINI_MODEL_SEQUENCE = ["gemini-1.5-pro-latest", "gemini-1.5-flash-latest"]
     
 def load_gemini_sequence():
     if os.path.exists(GEMINI_SEQUENCE_CONFIG_FILE):
         try:
             with open(GEMINI_SEQUENCE_CONFIG_FILE, "r") as f:
                 data = json.load(f)
-                return data.get("gemini_model_sequence", DEFAULT_GEMINI_MODEL_SEQUENCE)
+                return data.get("gemini_model_sequence")
         except (FileNotFoundError, json.JSONDecodeError):
-            return DEFAULT_GEMINI_MODEL_SEQUENCE
-    return DEFAULT_GEMINI_MODEL_SEQUENCE
+            return None  # Don't fall back to default
+    return None  # Don't fall back to default
+
 
 def save_gemini_sequence(sequence):
     data = {"gemini_model_sequence": sequence}
@@ -72,6 +58,7 @@ if "show_change_password" not in st.session_state:
 if "user_role" not in st.session_state:
     st.session_state["user_role"] = None
 if "app_config" not in st.session_state:
+    loaded_sequence = load_gemini_sequence()
     st.session_state["app_config"] = {
         "input_folder": "",
         "output_folder": "",
@@ -81,8 +68,14 @@ if "app_config" not in st.session_state:
         "gemini_api_key": "",
         "ollama_model": "deepseek-r1:1.5b",
         "temperature": 0.5,
-        "gemini_model_sequence": load_gemini_sequence() # Load sequence on app start
+        "gemini_model_sequence": loaded_sequence if loaded_sequence else []
+# Load sequence on app start
     }
+    st.session_state["app_config"]["selected_model"] = (
+        st.session_state["app_config"]["gemini_model_sequence"][0]
+        if st.session_state["app_config"]["gemini_model_sequence"]
+        else None
+    )
     st.session_state["app_config"]["selected_model"] = st.session_state["app_config"]["gemini_model_sequence"][0] if st.session_state["app_config"]["gemini_model_sequence"] else None
 if "current_gemini_model_index" not in st.session_state:
     st.session_state["current_gemini_model_index"] = 0
@@ -99,150 +92,160 @@ def check_internet_connection():
     except urllib.error.URLError:
         return False
 
-# Load configuration from Firebase
 def load_configuration():
-    if not check_internet_connection():
-        st.error("❌ No internet connection. Cannot load configuration.")
-        return
+    conn = get_connection()
     try:
-        config = db.child("app_config").get().val()
-        if config:
-            # Keep existing config, but ensure Gemini sequence is loaded from file
-            config["gemini_model_sequence"] = st.session_state["app_config"]["gemini_model_sequence"]
-            st.session_state["app_config"] = config
+        cursor = conn.cursor()
+        cursor.execute("SELECT gemini_model_sequence FROM app_config_admin ORDER BY id LIMIT 1")
+        row = cursor.fetchone()
+        if row:
+            st.session_state["app_config"]["gemini_model_sequence"] = json.loads(row[0])
+            st.session_state["app_config"]["selected_model"] = st.session_state["app_config"]["gemini_model_sequence"][0]
+            # Load temperature if present
+            if len(row) > 1 and row[1] is not None:
+                st.session_state["app_config"]["temperature"] = float(row[1])
+        else:
+            st.warning("⚠ No Gemini model sequence found in DB. Please set it manually.")
+            st.session_state["app_config"]["gemini_model_sequence"] = []
+            st.session_state["app_config"]["selected_model"] = None
+
     except Exception as e:
-        st.error(f"Error loading configuration: {e}")
+        st.error(f"❌ Failed to load admin config: {e}")
+    finally:
+        cursor.close()
+        conn.close()
 
 def save_configuration():
-    if not check_internet_connection():
-        st.error("❌ No internet connection. Cannot save configuration.")
-        return
-    # Save Gemini sequence to local file
-    save_gemini_sequence(st.session_state["app_config"]["gemini_model_sequence"])
-    # Ensure Gemini sequence in Firebase matches the file
-    temp_config = st.session_state["app_config"].copy()
-    temp_config["gemini_model_sequence"] = load_gemini_sequence() # Reload to ensure latest from file
+    conn = get_connection()
     try:
-        db.child("app_config").set(temp_config)
-        st.success("Configuration saved successfully!")
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE app_config_admin
+            SET gemini_model_sequence = %s
+            WHERE id = (SELECT id FROM app_config_admin ORDER BY id LIMIT 1)
+            """,
+            (
+                json.dumps(st.session_state["app_config"]["gemini_model_sequence"]),
+            )  # ← note the comma here
+        )
+        conn.commit()
+        st.success("✅ Configuration saved to Supabase.")
     except Exception as e:
-        st.error(f"Error saving configuration to Firebase: {e}")
-
-# --- Modified login() Function (using your existing get_connection()) ---
+        st.error(f"❌ Failed to save admin config: {e}")
+    finally:
+        cursor.close()
+        conn.close()
 def login(email, password):
     if not check_internet_connection():
         st.error("❌ No internet connection. Cannot log in.")
         return
+
     try:
-        user = auth.sign_in_with_email_and_password(email, password)
-        st.session_state["user"] = user
+        conn = get_connection()
+        if not conn:
+            st.error("❌ Could not connect to the database during login.")
+            return
+
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT api_key, role, password, output_folder_path, completed_folder_path "
+            "FROM user_api_keys WHERE email = %s",
+            (email,)
+        )
+        result = cursor.fetchone()
+
+        if not result:
+            st.error("❌ User not found.")
+            return
+
+        db_api_key, db_role, db_password, output_path, completed_path = result
+
+        # Validate password (plain text check – hash it in production)
+        if password != db_password:
+            st.error("❌ Incorrect password.")
+            return
+
+        # Store session state
+        st.session_state["user"] = {
+            "email": email,
+            "api_key": db_api_key
+        }
         st.session_state["logged_in"] = True
         st.session_state["show_login"] = False
         st.session_state["show_register"] = False
         st.session_state["show_forgot_password"] = False
 
-        # Get user role from Firebase Realtime Database
-        user_data = db.child("users").child(user['localId']).get().val()
+        # Set user role
+        st.session_state["user_role"] = db_role if db_role else "user"
 
-        # Check and set admin status if email matches
-        if check_and_set_admin(email, user['localId']):
-            st.session_state["user_role"] = "admin"
+        # Set folder paths
+
+        st.session_state["app_config"]["output_folder"] = output_path or "output_files"
+        st.session_state["app_config"]["completed_folder"] = completed_path or "completed_files"
+        st.success(f"📁 Folder paths loaded for {email}")
+
+        # Default fallback if API key is missing
+        if not db_api_key:
+            default_api_key = st.session_state["app_config"].get("gemini_api_key")
+            if default_api_key:
+                st.session_state["user"]["api_key"] = default_api_key
+                st.info(f"🔑 Using default API Key for new user: {email}")
+            else:
+                st.warning(f"⚠️ No API Key found for {email} and no default key is set.")
+                st.session_state["user"]["api_key"] = None
         else:
-            st.session_state["user_role"] = user_data.get("role", "user") if user_data else "user"
+            st.success(f"🔑 API Key fetched for {email}")
 
-        # --- Fetch API Key and Folder Paths from the PostgreSQL database ---
-        conn = get_connection()
-        if conn:
-            try:
-                cursor = conn.cursor()
+        load_configuration()
+        st.session_state["model_sequence_inputs"] = st.session_state["app_config"]["gemini_model_sequence"] + [None]
 
-                # Fetch API Key
-                cursor.execute("SELECT api_key FROM user_api_keys WHERE email = %s", (email,))
-                api_key_result = cursor.fetchone()
-                if api_key_result:
-                    st.session_state["user"]["api_key"] = api_key_result[0]
-                    st.success(f"🔑 API Key fetched for {email}")
-                else:
-                    default_api_key = st.session_state["app_config"].get("gemini_api_key")
-                    if default_api_key:
-                        st.session_state["user"]["api_key"] = default_api_key
-                        st.info(f"🔑 Using default API Key for new user: {email}")
-                    else:
-                        st.warning(f"⚠️ No API Key found for {email} and no default key is set.")
-                        st.session_state["user"]["api_key"] = None
-
-                # Fetch Folder Paths
-                cursor.execute(
-                    "SELECT input_folder_path, output_folder_path, completed_folder_path "
-                    "FROM user_api_keys WHERE email = %s",
-                    (email,),
-                )
-                folder_paths_result = cursor.fetchone()
-                if folder_paths_result:
-                    st.session_state["app_config"]["input_folder"] = folder_paths_result[0] or "input_files"
-                    st.session_state["app_config"]["output_folder"] = folder_paths_result[1] or "output_files"
-                    st.session_state["app_config"]["completed_folder"] = folder_paths_result[2] or "completed_files"
-                    st.success(f"📁 Folder paths loaded for {email}")
-                else:
-                    st.info(f"ℹ️ No saved folder paths found for {email}, using defaults.")
-                    st.session_state["app_config"]["input_folder"] = "input_files"
-                    st.session_state["app_config"]["output_folder"] = "output_files"
-                    st.session_state["app_config"]["completed_folder"] = "completed_files"
-
-            except Exception as e:
-                st.error(f"⚠ Error fetching data from database: {e}")
-            finally:
-                cursor.close()
-                conn.close()
-        else:
-            st.error("❌ Could not connect to the database during login.")
-            st.session_state["user"]["api_key"] = None
 
         st.success("✅ Successfully logged in!")
         st.rerun()
+
     except Exception as e:
         st.error(f"❌ Login failed: {e}")
 
+    finally:
+        if conn:
+            cursor.close()
+            conn.close()
+            
 # --- Modified register() Function (using your existing get_connection()) ---
 def register(email, password):
     if not check_internet_connection():
         st.error("❌ No internet connection. Cannot register.")
         return
     try:
-        user = auth.create_user_with_email_and_password(email, password)
+        # Generate API Key
+        api_key = os.urandom(24).hex()
+        role = "user"  # Default role
 
-        # Check if this is the admin email and set role accordingly
-        role = "admin" if email.lower() == "rajacharya3242@gmail.com" else "user"
-
-        # Add user to Firebase database with appropriate role
-        db.child("users").child(user['localId']).set({
-            "email": email,
-            "role": role
-        })
-
-        # --- Add user email and a new API Key to the PostgreSQL database ---
-        api_key = os.urandom(24).hex() # Generate a random API key
         conn = get_connection()
         if conn:
-            try:
-                cursor = conn.cursor()
-                cursor.execute("INSERT INTO user_api_keys (email, api_key) VALUES (%s, %s)", (email, api_key))
+            cursor = conn.cursor()
+            # Check if user already exists
+            cursor.execute("SELECT * FROM user_api_keys WHERE email = %s", (email,))
+            if cursor.fetchone():
+                st.warning("⚠️ Email already registered.")
+            else:
+                cursor.execute(
+                    "INSERT INTO user_api_keys (email, password, api_key, role) VALUES (%s, %s, %s, %s)",
+                    (email, password, api_key, role)
+                )
                 conn.commit()
-                st.success(f"🔑 API Key generated and stored for {email}")
-            except Exception as e:
-                st.error(f"⚠ Error storing API Key: {e}")
-            finally:
-                cursor.close()
-                conn.close()
+                st.success("✅ Account created! Please login.")
+                st.session_state["show_register"] = False
+                st.session_state["show_login"] = True
+                st.rerun()
+            cursor.close()
+            conn.close()
         else:
-            st.error("❌ Could not connect to the database to store API Key.")
-
-        st.success("✅ Account created! Please login.")
-        st.session_state["show_register"] = False
-        st.session_state["show_login"] = True
-        st.rerun()
+            st.error("❌ Could not connect to the database.")
     except Exception as e:
         st.error(f"❌ Registration failed: {e}")
+
 
 # --- Modified manage_user_api_keys() Function (using your existing get_connection()) ---
 def manage_user_api_keys():
@@ -305,6 +308,7 @@ def manage_user_api_keys():
     conn.close()
 
 def logout():
+    st.session_state["config_loaded"] = False
     st.session_state["user"] = None
     st.session_state["logged_in"] = False
     st.session_state["user_role"] = None
@@ -313,183 +317,148 @@ def logout():
     st.rerun()
 
 def send_password_reset_email(email):
-    if not check_internet_connection():
-        st.error("❌ No internet connection. Cannot send reset email.")
-        return
-    try:
-        auth.send_password_reset_email(email)
-        st.success("📧 Password reset email sent! Check your inbox.")
-        st.session_state["show_forgot_password"] = False
-        st.session_state["show_login"] = True
-        st.rerun()
-    except Exception as e:
-        st.error(f"❌ Error sending reset email: {e}")
+    st.info("📬 To reset your password, please contact the administrator.")
 
 def change_password(current_password, new_password):
-    if not check_internet_connection():
-        st.error("❌ No internet connection. Cannot change password.")
+    if not st.session_state.get("user"):
+        st.error("❌ No user logged in.")
         return
     try:
-        user = auth.sign_in_with_email_and_password(
-            st.session_state["user"]["email"],
-            current_password
-        )
-        auth.update_password(user["idToken"], new_password)
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT password FROM user_api_keys WHERE email = %s", (st.session_state["user"]["email"],))
+        result = cursor.fetchone()
+        if not result or result[0] != current_password:
+            st.error("❌ Current password is incorrect.")
+            return
+        cursor.execute("UPDATE user_api_keys SET password = %s WHERE email = %s", (new_password, st.session_state["user"]["email"]))
+        conn.commit()
         st.success("🔑 Password changed successfully!")
-        st.session_state["show_change_password"] = False
-        st.rerun()
     except Exception as e:
         st.error(f"❌ Error changing password: {e}")
+    finally:
+        cursor.close()
+        conn.close()
 
+# --- Promote/Demote Admin ---
 def promote_to_admin(email):
-    if not check_internet_connection():
-        st.error("❌ No internet connection. Cannot promote user.")
-        return
     if st.session_state["user_role"] != "admin":
         st.error("❌ Only admins can perform this action")
         return
-
+    conn = get_connection()
     try:
-        # Find user by email
-        users = db.child("users").get().val()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE user_api_keys SET role = 'admin' WHERE email = %s", (email,))
+        cursor.execute("SELECT * FROM user_api_keys WHERE email = %s", (email,))
+        if not cursor.fetchone():
+            st.warning("⚠️ User not found.")
 
-        user_id = None
-        for uid, user_data in users.items():
-            if user_data.get("email") == email:
-                user_id = uid
-                break
-
-        if user_id:
-            db.child("users").child(user_id).update({"role": "admin"})
-            st.success(f"✅ User {email} promoted to admin.")
-        else:
-            st.error(f"❌ User with email {email} not found.")
+        conn.commit()
+        st.success(f"✅ User {email} promoted to admin.")
     except Exception as e:
         st.error(f"❌ Error promoting user: {e}")
+    finally:
+        cursor.close()
+        conn.close()
 
 def demote_from_admin(email):
-    if not check_internet_connection():
-        st.error("❌ No internet connection. Cannot demote user.")
-        return
     if st.session_state["user_role"] != "admin":
         st.error("❌ Only admins can perform this action")
         return
-
+    conn = get_connection()
     try:
-        # Find user by email
-        users = db.child("users").get().val()
-        user_id = None
-        for uid, user_data in users.items():
-            if user_data.get("email") == email:
-                user_id = uid
-                break
-
-        if user_id:
-            db.child("users").child(user_id).update({"role": "user"})
-            st.success(f"✅ User {email} demoted to user.")
-        else:
-            st.error(f"❌ User with email {email} not found.")
+        cursor = conn.cursor()
+        cursor.execute("UPDATE user_api_keys SET role = 'user' WHERE email = %s", (email,))
+        conn.commit()
+        st.success(f"✅ User {email} demoted to user.")
     except Exception as e:
         st.error(f"❌ Error demoting user: {e}")
+    finally:
+        cursor.close()
+        conn.close()
+
+# --- Manage Users from Supabase (was Firebase) ---
 def manage_users():
     st.subheader("🧑‍💻 Manage Users")
     if st.session_state["user_role"] != "admin":
         st.error("❌ Only admins can manage users.")
         return
 
-    users_data = db.child("users").get().val()
-    if users_data:
-        for user_id, user_info in users_data.items():
-            email = user_info.get("email")
-            role = user_info.get("role", "user")
+    conn = get_connection()
+    if not conn:
+        st.error("❌ Could not connect to the database.")
+        return
+
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT email, role FROM user_api_keys")
+        users_data = cursor.fetchall()
+
+        for email, role in users_data:
             col1, col2, col3 = st.columns([3, 2, 2])
             with col1:
-                st.markdown(f"**Email:** {email if email else 'N/A'}")
+                st.markdown(f"**Email:** {email}")
             with col2:
                 st.markdown(f"**Role:** {role}")
             with col3:
                 if role == "user" and email != st.session_state["user"]["email"]:
-                    if st.button("Promote to Admin", key=f"promote_{user_id}"):
+                    if st.button("Promote to Admin", key=f"promote_{email}"):
                         promote_to_admin(email)
                         st.rerun()
-                elif role == "admin" and email is not None and st.session_state["user"].get("email") is not None and email != st.session_state["user"]["email"] and (email is not None and email.lower() != "rajacharya3242@gmail.com"): # Added another explicit None check
-                    if st.button("Demote to User", key=f"demote_{user_id}"):
+                elif role == "admin" and email != st.session_state["user"]["email"]:
+                    if st.button("Demote to User", key=f"demote_{email}"):
                         demote_from_admin(email)
                         st.rerun()
-    else:
-        st.info("No users registered.")
+    except Exception as e:
+        st.error(f"❌ Error fetching users: {e}")
+    finally:
+        cursor.close()
+        conn.close()
 def auth_section():
     st.title("🔒 Authentication")
-    if st.session_state["show_login"]:
+    
+    # Tab-based navigation for cleaner UI
+    tab1, tab2, tab3 = st.tabs(["Login", "Register", "Forgot Password"])
+    
+    with tab1:
         with st.form("login_form"):
-            st.subheader("Login")
             email = st.text_input("Email")
             password = st.text_input("Password", type="password")
-            submitted = st.form_submit_button("Login")
-            if submitted:
+            if st.form_submit_button("Login", use_container_width=True):
                 login(email, password)
-                return
-        st.markdown("Don't have an account? [Register here](#register)")
-        st.markdown("[Forgot password?](#forgot-password)")
-
-    if st.session_state["show_register"]:
+    
+    with tab2:
         with st.form("register_form"):
-            st.subheader("Register")
             email = st.text_input("Email")
             password = st.text_input("Password", type="password")
             confirm_password = st.text_input("Confirm Password", type="password")
-            submitted = st.form_submit_button("Register")
-            if submitted:
+            if st.form_submit_button("Register", use_container_width=True):
                 if password == confirm_password:
                     register(email, password)
-                    return
                 else:
                     st.error("Passwords do not match!")
-        st.markdown("Already have an account? [Login here](#login)")
+    
+    
+    with tab3:
+        st.info("📧 Contact admin for password reset")
 
-    if st.session_state["show_forgot_password"]:
-        with st.form("forgot_password_form"):
-            st.subheader("Forgot Password")
-            email = st.text_input("Enter your email:")
-            submitted = st.form_submit_button("Send Reset Email")
-            if submitted:
-                send_password_reset_email(email)
-                return
-        st.markdown("Remember your password? [Login here](#login)")
-
-    st.markdown("---")
-    cols = st.columns(3)
-    with cols[0]:
-        if st.button("Register"):
-            st.session_state["show_login"] = False
-            st.session_state["show_register"] = True
-            st.session_state["show_forgot_password"] = False
-            st.rerun()
-    with cols[1]:
-        if st.button("Login"):
-            st.session_state["show_login"] = True
-            st.session_state["show_register"] = False
-            st.session_state["show_forgot_password"] = False
-            st.rerun()
-    with cols[2]:
-        if st.button("Forgot Password"):
-            st.session_state["show_login"] = False
-            st.session_state["show_register"] = False
-            st.session_state["show_forgot_password"] = True
-            st.rerun()
 
 def get_connection():
     try:
-        return psycopg2.connect(
-            database="postgres",
-            user="postgres",
-            password="root",
-            host="127.0.0.1",
-            port=5432,
-        )
+        conn = psycopg2.connect(
+        host=st.secrets["supabase"]["host"],
+        port=st.secrets["supabase"]["port"],
+        dbname=st.secrets["supabase"]["database"],
+        user=st.secrets["supabase"]["user"],
+        password=st.secrets["supabase"]["password"],
+        sslmode="require"
+    )
+
+        return conn
     except Exception as e:
-        st.error(f"⚠ Error connecting to PostgreSQL: {e}")
+        st.error(f"❌ Could not connect to Supabase: {e}")
         return None
+
 
 def extract_text_from_html(html_content):
     soup = BeautifulSoup(html_content, 'html.parser')
@@ -501,25 +470,6 @@ def extract_text_from_html(html_content):
     # Further cleaning: remove extra whitespace and newlines
     text = ' '.join(text.split())
     return text
-
-def extract_filename(filename):
-    """Extract output filename according to legal document processing rules."""
-    # Remove file extension
-    name = filename.split('.')[0]
-    # Find first underscore position
-    underscore_pos = name.find('_')
-    if underscore_pos == -1:
-        core = name
-    else:
-        core = name[:underscore_pos]
-    # Remove YB or HN prefix if present
-    if core.startswith('YB'):
-        result = core[2:]
-    elif core.startswith('HN'):
-        result = core[2:]
-    else:
-        result = core
-    return result + '.txt'
 
 
 def generate_prompt(extracted_text, selected_questions):
@@ -602,6 +552,11 @@ def read_txt_file(file_path):
         with open(file_path, "r", encoding="latin-1") as f:
             return f.read()
         
+
+
+# SOLUTION 1: Fix file naming in process_html function
+# Replace the existing process_html function with this updated version
+
 def process_html(file_path, file_name, selected_questions):
     if not check_internet_connection():
         st.error("❌ No internet connection. Cannot process file.")
@@ -617,8 +572,6 @@ def process_html(file_path, file_name, selected_questions):
     output_subfolder = output_folder
     if not os.path.exists(output_subfolder):
         os.makedirs(output_subfolder, exist_ok=True)
-
-
 
     # Determine file type and process accordingly
     file_extension = os.path.splitext(file_name)[1].lower()
@@ -654,13 +607,21 @@ def process_html(file_path, file_name, selected_questions):
         st.error(f"❌ Error generating response: {e}")
         return None
 
-
     if response:
-        # Save .txt file
-        txt_file_name = extract_filename(file_name)
-        txt_file_path = os.path.join(output_subfolder, txt_file_name)
-        with open(txt_file_path, "w", encoding="utf-8") as txt_file:
-            txt_file.write(response)
+        # Updated: Extract 5-digit number after 'YB' prefix for filenames like 'YB68332_1108.htm' -> '68332.txt'
+        base_name = os.path.splitext(file_name)[0]
+        import re
+        match = re.search(r'^YB(\d{5})_', base_name)
+        if match:
+            cleaned_base = match.group(1)
+        else:
+            cleaned_base = base_name
+        txt_file_name = cleaned_base + ".txt"
+
+        # Save response to output folder
+        txt_output_path = os.path.join(output_subfolder, txt_file_name)
+        with open(txt_output_path, "w", encoding="utf-8") as f:
+            f.write(response)
 
         # Move processed file to completed folder
         if not os.path.exists(completed_folder):
@@ -673,12 +634,11 @@ def process_html(file_path, file_name, selected_questions):
         except Exception as e:
             st.error(f"❌ Error moving processed file: {e}")
 
-        return response
+        return response, txt_file_name  # Return both response and clean filename
     else:
         return None
 
-
-# New function to process HTML files within their folder structure
+# SOLUTION 2: Updated process_html_in_folder function
 def process_html_in_folder(file_path, file_name, selected_questions, destination_subfolder):
     if not check_internet_connection():
         st.error("❌ No internet connection. Cannot process HTML.")
@@ -729,22 +689,39 @@ def process_html_in_folder(file_path, file_name, selected_questions, destination
         st.error(f"❌ Error generating response: {e}")
         return None
 
-
     if response:
-        txt_file_name = extract_filename(file_name)
-        txt_file_path = os.path.join(output_subfolder, txt_file_name)
-        with open(txt_file_path, "w", encoding="utf-8") as txt_file:
-            txt_file.write(response)
+        # FIXED: Remove prefixes like HN, YB etc. from filename
+        base_name = os.path.splitext(file_name)[0]
+        
+        # Remove HN/YB prefix but keep the letter after it, then remove everything after underscore
+        import re
+        # Pattern: YBz11963_1005 -> z11963
+        cleaned_base = re.sub(r'^(HN|YB)([a-zA-Z]\d+)_.*', r'\2', base_name)
+        
+        # If no pattern match, try simpler pattern for cases without letter after prefix
+        if cleaned_base == base_name:
+            cleaned_base = re.sub(r'^[A-Z]{2}\d+_', '', base_name)
+        
+        # If still no change, use original name without extension
+        if cleaned_base == base_name:
+            cleaned_base = base_name
+            
+        txt_file_name = cleaned_base + ".txt"
+
+        # Save response to output subfolder
+        txt_output_path = os.path.join(output_subfolder, txt_file_name)
+        with open(txt_output_path, "w", encoding="utf-8") as f:
+            f.write(response)
 
         # Move processed HTML file to completed subfolder instead of root completed folder
         try:
             destination_path = os.path.join(destination_subfolder, file_name)
-            shutil.copy2(file_path, destination_path)
+            shutil.copy2(file_path, destination_path)  # Copy the file to destination first
             st.success(f"✅ Copied processed file to: {destination_path}")
         except Exception as e:
             st.error(f"❌ Error copying processed file: {e}")
 
-        return response
+        return response, txt_file_name  # Return both response and clean filename
     else:
         return None
     
@@ -820,7 +797,7 @@ def process_folder(folder_path, selected_questions):
         progress_bar.progress((i + 1) / total_subfolders)
 
     st.success(f"✅ Successfully attempted to process {total_subfolders} subfolders. Moved {moved_subfolders_count} subfolders.")
-
+    
 
 def get_available_gemini_models():
     """Dynamically fetch available Gemini models from the Google Generative AI API."""
@@ -837,26 +814,28 @@ def get_available_gemini_models():
             if not api_key:
                 st.warning("⚠️ No API key available. Using default model list.")
                 # Return a default list as fallback
-                return ["gemini-2.5-pro-exp-03-25", "gemini-2.0-pro", "gemini-1.5-pro", "gemini-2.0-flash"]
+                return ["gemini-1.5-pro-latest", "gemini-1.5-flash-latest"]
         
         # Configure the API with the available key
         genai.configure(api_key=api_key)
         
         # Get list of available models
         models = genai.list_models()
-        # Filter for only Gemini models
-        gemini_models = [model.name.split('/')[-1] for model in models if 'gemini' in model.name.lower()]
-        
+        # Filter for only Gemini models that support generateContent
+        gemini_models = [
+            model.name.split('/')[-1]
+            for model in models
+            if 'gemini' in model.name.lower() and getattr(model, "supported_generation_methods", None) and "generateContent" in model.supported_generation_methods
+        ]
         if not gemini_models:
             st.warning("⚠️ No Gemini models found. Using default model list.")
-            return ["gemini-2.5-pro-exp-03-25", "gemini-2.0-pro", "gemini-1.5-pro", "gemini-2.0-flash"]
-        
+            return ["gemini-1.5-pro-latest", "gemini-1.5-flash-latest"]
         return gemini_models
-   
+
     except Exception as e:
         st.error(f"❌ Error fetching Gemini models: {e}")
         # Return a default list as fallback
-        return ["gemini-2.5-pro-exp-03-25", "gemini-2.0-pro", "gemini-1.5-pro", "gemini-2.0-flash"]
+        return ["gemini-1.5-pro-latest", "gemini-1.5-flash-latest"]
     
 def admin_ui():
     st.title("⚙️ Admin Panel")
@@ -1092,11 +1071,7 @@ def renumber_questions(conn, table_name):
         st.error(f"❌ Error renumbering questions in '{table_name}': {e}")
     finally:
         cursor.close()
-def check_and_set_admin(email, user_id):
-    if email.lower() == "rajacharya3242@gmail.com":
-        db.child("users").child(user_id).update({"role": "admin"})
-        return True
-    return False
+
 
 def get_gemini_questions():
     if not check_internet_connection():
@@ -1136,28 +1111,15 @@ def get_deepseek_questions():
             conn.close()
     return []
 
+# SOLUTION 3: Updated user_ui function with ordered question processing and moved ZIP download
 def user_ui():
     st.title("⚖ Document Analyzer")
 
     with st.sidebar:
         st.subheader(f"👤 User: {st.session_state['user']['email']}")
         st.info("ℹ Using admin-configured settings")
-
-        # Display current configuration (read-only)
-        st.markdown("### Current Configuration")
-        config = st.session_state["app_config"]
-        st.markdown(f"- **Model Provider:** {config['model_provider']}")
-        if config["model_provider"] == "Google Gemini":
-            st.markdown(f"- **Gemini Model Sequence:** {', '.join(config['gemini_model_sequence'])}")
-        else:
-            st.markdown(f"- **DeepSeek Model:** {config['ollama_model']}")
-        st.markdown(f"- **Input Folder:** {config['input_folder']}")
-        st.markdown(f"- **Output Folder:** {config['output_folder']}")
-        st.markdown(f"- **Completed Folder:** {config['completed_folder']}")
-
         if st.button("Change Password"):
             st.session_state["show_change_password"] = True
-
         if st.button("Logout"):
             logout()
             return
@@ -1176,68 +1138,18 @@ def user_ui():
                 else:
                     st.error("New passwords don't match!")
     else:
-        st.subheader("📂 Folder Configuration")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.session_state["app_config"]["input_folder"] = st.text_input(
-                "Input Folder Path",
-                st.session_state["app_config"]["input_folder"]
-            )
-        with col2:
-            st.session_state["app_config"]["output_folder"] = st.text_input(
-                "Output Folder Path",
-                st.session_state["app_config"]["output_folder"]
-            )
-        with col3:
-            st.session_state["app_config"]["completed_folder"] = st.text_input(
-                "Completed Files Folder",
-                st.session_state["app_config"]["completed_folder"]
-            )
-
-        if st.button("Save Settings"):
-            if st.session_state["user"] and st.session_state["user"]["email"]:
-                conn = get_connection()
-                if conn:
-                    cursor = conn.cursor()
-                    try:
-                        cursor.execute(
-                            "UPDATE user_api_keys SET input_folder_path = %s, output_folder_path = %s, completed_folder_path = %s WHERE email = %s",
-                            (
-                                st.session_state["app_config"]["input_folder"],
-                                st.session_state["app_config"]["output_folder"],
-                                st.session_state["app_config"]["completed_folder"],
-                                st.session_state["user"]["email"],
-                            ),
-                        )
-                        conn.commit()
-                        st.success("💾 Folder settings saved!")
-                    except Exception as e:
-                        st.error(f"❌ Error saving folder settings: {e}")
-                    finally:
-                        cursor.close()
-                        conn.close()
-                else:
-                    st.error("❌ Could not connect to the database to save settings.")
-            else:
-                st.error("⚠️ User information not found. Cannot save settings.")
-
         st.markdown("---")
-
-        # File upload and folder processing options
         processing_mode = st.radio(
             "Select Processing Mode:",
-            ["Upload Single File", "Process Folder"],
+            ["Upload Single File", "Upload Zip of Files"],
             index=0
         )
         uploaded_file = None
+        uploaded_zip = None
         if processing_mode == "Upload Single File":
-            uploaded_file = st.file_uploader("📥 Upload an HTML or TXT file", type=["htm", "html", "txt"])  # Added "txt" type
-        else:  # Process Folder
-            input_folder = st.session_state["app_config"]["input_folder"]
-            st.info(f"🔍 Using configured input folder: {input_folder}")
-            if not input_folder or not os.path.exists(input_folder):
-                st.error("❌ Invalid input folder path! Please contact admin.")
-                return
+            uploaded_file = st.file_uploader("📥 Upload an HTML or TXT file", type=["htm", "html", "txt"])
+        else:
+            uploaded_zip = st.file_uploader("📦 Upload a ZIP file containing HTML/TXT files", type=["zip"])
 
         st.subheader("🌡️ Temperature Control")
         st.warning(
@@ -1264,64 +1176,215 @@ def user_ui():
         else:
             questions = get_deepseek_questions()
 
-        # Display questions horizontally in columns
+        # FIXED: Store selected questions in order with their original indices
         cols = st.columns(4)  # Adjust the number of columns as needed
-        selected_questions = []
+        selected_questions_with_order = []  # Store (index, question_text) tuples
 
         for i, (q_id, question_text) in enumerate(questions):
             with cols[i % 4]:  # This will distribute questions across 4 columns
                 if st.checkbox(f"{q_id}", key=question_text):
-                    selected_questions.append(question_text)
+                    selected_questions_with_order.append((i, question_text))
+
+        # Sort by original index to maintain order
+        selected_questions_with_order.sort(key=lambda x: x[0])
+        selected_questions = [q[1] for q in selected_questions_with_order]  # Extract just the questions in order
 
         st.markdown("---")
+
+        # Initialize session state for tracking processed files
+        if "processed_files_count" not in st.session_state:
+            st.session_state["processed_files_count"] = 0
+        if "show_zip_download" not in st.session_state:
+            st.session_state["show_zip_download"] = False
 
         # Process based on mode
         if processing_mode == "Upload Single File":
             if st.button("🚀 Analyze Document"):
                 if uploaded_file is None:
-                    st.error("⚠️ Please upload an HTML or TXT file before analyzing.")  # Updated message
+                    st.error("⚠️ Please upload an HTML or TXT file before analyzing.")
                 else:
                     try:
                         file_name = uploaded_file.name
-                        file_content = uploaded_file.getvalue().decode("utf-8")
+                        try:
+                            file_content = uploaded_file.getvalue().decode("utf-8")
+                        except UnicodeDecodeError:
+                            file_content = uploaded_file.getvalue().decode("latin-1")
 
-                        # Create temp file in input folder
-                        input_folder = st.session_state["app_config"]["input_folder"]
-                        if not os.path.exists(input_folder):
-                            os.makedirs(input_folder, exist_ok=True)
-
-                        temp_path = os.path.join(input_folder, file_name)
+                        # Save to a temporary location instead of input_folder
+                        temp_path = os.path.join(tempfile.gettempdir(), file_name)
                         with open(temp_path, "w", encoding="utf-8") as f:
                             f.write(file_content)
 
-                        response = process_html(temp_path, file_name, selected_questions)  # Changed to process_html
-                        if response:
+                        result = process_html(temp_path, file_name, selected_questions)
+
+                        if result:
+                            response, clean_filename = result
                             st.success("✅ Analysis Complete!")
+                            st.text_area("Response", response, height=150, key="response_single_file")
                             st.download_button(
                                 label="📥 Download Response",
                                 data=response,
-                                file_name=f"{os.path.splitext(file_name)[0]}_response.txt",
-                                mime="text/plain"
+                                file_name=clean_filename,  # Use cleaned filename
+                                mime="text/plain",
+                                key="download_single_file"
                             )
+                            st.session_state["processed_files_count"] += 1
+                            st.session_state["show_zip_download"] = True
                         else:
                             st.error("❌ Document analysis failed. See error messages above.")
                     except Exception as e:
                         st.session_state["upload_error"] = True
                         st.error(f"❌ Error during file processing Try Again: {e}")
                         st.rerun()
-        elif processing_mode == "Process Folder":
-            if st.button("🚀 Process Folder"):  # Add a button for folder processing
-                process_folder(input_folder, selected_questions)
+        elif processing_mode == "Upload Zip of Files":
+            if st.button("🚀 Process Zip"):
+                if uploaded_zip is None:
+                    st.error("⚠️ Please upload a ZIP file before processing.")
+                else:
+                    process_zip_file(uploaded_zip, selected_questions)
+                    st.session_state["show_zip_download"] = True
 
+        # MOVED: Show ZIP download button after processing (not in sidebar)
+        if st.session_state.get("show_zip_download", False) and st.session_state["app_config"]["output_folder"]:
+            st.markdown("---")
+            st.subheader("📦 Download All Responses")
+            
+            # Create download button in main area
+            zip_buffer = create_zip_and_download(st.session_state["app_config"]["output_folder"])
+            if zip_buffer:
+                st.download_button(
+                    label="📦 Download All Responses as ZIP",
+                    data=zip_buffer,
+                    file_name="all_responses.zip",
+                    mime="application/zip",
+                    key="main_zip_download"
+                )
+
+# SOLUTION 4: Updated process_zip_file function with ordered processing and clean filenames
+def process_zip_file(zip_file, selected_questions):
+    temp_dir = tempfile.mkdtemp()
+    # 🔥 Clean output folder before new processing
+    output_folder = st.session_state["app_config"]["output_folder"]
+    if os.path.exists(output_folder):
+        for f in os.listdir(output_folder):
+            if f.endswith(".txt"):
+                os.remove(os.path.join(output_folder, f))
+
+    try:
+        with zipfile.ZipFile(zip_file, 'r') as zip_ref:
+            zip_ref.extractall(temp_dir)
+        supported_files = []
+        for root, _, files in os.walk(temp_dir):
+            for file in files:
+                if file.lower().endswith((".htm", ".html", ".txt")):
+                    supported_files.append(os.path.join(root, file))
+        if not supported_files:
+            st.warning("⚠ No supported files (.html/.htm/.txt) found in the zip.")
+            return
+        
+        for file_path in supported_files:
+            original_name = os.path.basename(file_path)
+            st.info(f"📄 Processing file: {original_name}")
+            
+            result = process_html(file_path, original_name, selected_questions)
+            if result:
+                response, clean_filename = result
+                
+                # Create clean display name (remove HN/YB prefix but keep letter after it)
+                import re
+                # Pattern: YBz11963_1005.htm -> z11963.htm
+                display_name = re.sub(r'^(HN|YB)([a-zA-Z]\d+)_.*', r'\2', os.path.splitext(original_name)[0]) + os.path.splitext(original_name)[1]
+                
+                # # If no pattern match, try simpler pattern
+                # if display_name == original_name:
+                #     display_name = re.sub(r'^[A-Z]{2}\d+_', '', original_name)
+                
+                st.text_area(f"Response for {display_name}", response, height=150, key=f"response_{original_name}")
+                
+                # KEEP: Individual download button under each response with clean filename
+                st.download_button(
+                    label=f"📥 Download Response for {display_name}",
+                    data=response,
+                    file_name=clean_filename,  # Use cleaned filename
+                    mime="text/plain",
+                    key=f"download_{original_name}"
+                )
+                
+                st.session_state["processed_files_count"] += 1
+                
+    
+    finally:
+        shutil.rmtree(temp_dir)
+        st.success("🎉 Process Completed")
+
+
+# SOLUTION 5: New function to create ZIP buffer (replaces create_zip_and_download)
+# SOLUTION 5: Updated function to replace create_zip_and_download
+def create_zip_and_download(output_folder):
+    """Create ZIP buffer for download without automatic sidebar placement"""
+    import io
+    
+    zip_buffer = io.BytesIO()
+    error_indicators = [
+        "❌", "⚠", "Error generating response", "quota", "not found", "failed to connect", 
+        "model", "invalid", "exception", "unavailable"
+    ]
+
+    try:
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            files_added = 0
+            for root, _, files in os.walk(output_folder):
+                for file in files:
+                    if file.endswith(".txt"):
+                        file_path = os.path.join(root, file)
+                        try:
+                            with open(file_path, "r", encoding="utf-8") as f:
+                                content = f.read().strip()
+
+                            # Validate content
+                            if not content.startswith("[Response from:"):
+                                continue
+
+                            content_lower = content.lower()
+                            if any(err in content_lower for err in error_indicators):
+                                continue
+
+                            # Add valid response content
+                            arcname = os.path.relpath(file_path, output_folder)
+                            zipf.writestr(arcname, content)
+                            files_added += 1
+                        except Exception as e:
+                            continue
+            
+            if files_added == 0:
+                return None
+                
+        zip_buffer.seek(0)
+        return zip_buffer.getvalue()
+    except Exception as e:
+        st.error(f"Error creating ZIP: {e}")
+        return None
+
+# SOLUTION 6: Updated main function (remove the old create_zip_and_download call)
 def main():
-
     if not st.session_state["logged_in"]:
         auth_section()
     else:
+        # ✅ Load config from Supabase on refresh after login
+        if "config_loaded" not in st.session_state:
+            load_configuration()
+            st.session_state["config_loaded"] = True  # Prevent loading it repeatedly
+
         if st.session_state["user_role"] == "admin":
             admin_ui()
         else:
             user_ui()
+
+
+    # Allow download of all outputs as a single ZIP
+    if st.session_state["app_config"]["output_folder"]:
+        create_zip_and_download(st.session_state["app_config"]["output_folder"])
+
 
 if __name__ == "__main__":
     main()
