@@ -1301,11 +1301,6 @@ def create_zip_and_download(output_folder):
     import io
     
     zip_buffer = io.BytesIO()
-    error_indicators = [
-        "❌", "⚠", "Error generating response", "quota", "not found", "failed to connect", 
-        "model", "invalid", "exception", "unavailable"
-    ]
-
     try:
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
             files_added = 0
@@ -1316,25 +1311,13 @@ def create_zip_and_download(output_folder):
                         try:
                             with open(file_path, "r", encoding="utf-8") as f:
                                 content = f.read().strip()
-
-                            # Validate content
-                            if not content.startswith("[Response from:"):
-                                continue
-
-                            content_lower = content.lower()
-                            if any(err in content_lower for err in error_indicators):
-                                continue
-
-                            # Add valid response content
                             arcname = os.path.relpath(file_path, output_folder)
                             zipf.writestr(arcname, content)
                             files_added += 1
                         except Exception as e:
                             continue
-            
             if files_added == 0:
                 return None
-                
         zip_buffer.seek(0)
         return zip_buffer.getvalue()
     except Exception as e:
