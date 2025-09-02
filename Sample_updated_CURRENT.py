@@ -14,6 +14,16 @@ import urllib.request
 import time
 import zipfile
 import tempfile
+# --- Unified Filename Extraction Function ---
+def extract_filename(file_name):
+    base = os.path.splitext(file_name)[0]
+    # Remove YB or HN prefix
+    if base.startswith('YB') or base.startswith('HN'):
+        base = base[2:]
+    # Take everything before first underscore
+    if '_' in base:
+        base = base.split('_')[0]
+    return base + '.txt'
 
 # Load environment variables
 load_dotenv()
@@ -608,16 +618,7 @@ def process_html(file_path, file_name, selected_questions):
         return None
 
     if response:
-        # Updated: Extract 5-digit number after 'YB' prefix for filenames like 'YB68332_1108.htm' -> '68332.txt'
-        base_name = os.path.splitext(file_name)[0]
-        import re
-        match = re.search(r'^YB(\d{5})_', base_name)
-        if match:
-            cleaned_base = match.group(1)
-        else:
-            cleaned_base = base_name
-        txt_file_name = cleaned_base + ".txt"
-
+        txt_file_name = extract_filename(file_name)
         # Save response to output folder
         txt_output_path = os.path.join(output_subfolder, txt_file_name)
         with open(txt_output_path, "w", encoding="utf-8") as f:
@@ -690,24 +691,7 @@ def process_html_in_folder(file_path, file_name, selected_questions, destination
         return None
 
     if response:
-        # FIXED: Remove prefixes like HN, YB etc. from filename
-        base_name = os.path.splitext(file_name)[0]
-        
-        # Remove HN/YB prefix but keep the letter after it, then remove everything after underscore
-        import re
-        # Pattern: YBz11963_1005 -> z11963
-        cleaned_base = re.sub(r'^(HN|YB)([a-zA-Z]\d+)_.*', r'\2', base_name)
-        
-        # If no pattern match, try simpler pattern for cases without letter after prefix
-        if cleaned_base == base_name:
-            cleaned_base = re.sub(r'^[A-Z]{2}\d+_', '', base_name)
-        
-        # If still no change, use original name without extension
-        if cleaned_base == base_name:
-            cleaned_base = base_name
-            
-        txt_file_name = cleaned_base + ".txt"
-
+        txt_file_name = extract_filename(file_name)
         # Save response to output subfolder
         txt_output_path = os.path.join(output_subfolder, txt_file_name)
         with open(txt_output_path, "w", encoding="utf-8") as f:
@@ -747,13 +731,12 @@ def process_folder(folder_path, selected_questions):
     progress_bar = st.progress(0)
 
     moved_subfolders_count = 0
+    error_files = []
     for i, subfolder_path in enumerate(subfolders_to_process):
         subfolder_name = os.path.basename(subfolder_path)
         st.info(f"📂 Processing subfolder {i+1}/{total_subfolders}: {subfolder_name}")
 
         supported_files = []
-        files_processed_successfully = True
-
         for root, _, files in os.walk(subfolder_path):
             for file in files:
                 if file.lower().endswith((".htm", ".html", ".txt")):
@@ -772,22 +755,16 @@ def process_folder(folder_path, selected_questions):
                 try:
                     response = process_html_in_folder(file_path, file_name, selected_questions, destination_subfolder_path)
                     if not response:
-                        files_processed_successfully = False
-                        st.warning(f"⚠️ Processing failed for {file_name} in {subfolder_name}. Folder will not be moved.")
-                        break
+                        error_files.append(file_name)
+                        st.warning(f"⚠️ Processing failed for {file_name} in {subfolder_name}.")
                     else:
                         st.text_area(f"Response for {file_name} in {subfolder_name}", response, height=150, key=f"response_{subfolder_name}_{file_name}")
                 except Exception as e:
-                    files_processed_successfully = False
-                    st.error(f"❌ Error processing {file_name} in {subfolder_name}: {e}. Folder will not be moved.")
-                    break
-
-            if not files_processed_successfully:
-                st.error(f"🛑 Errors in '{subfolder_name}'. Skipping folder move.")
-                continue
+                    error_files.append(file_name)
+                    st.error(f"❌ Error processing {file_name} in {subfolder_name}: {e}.")
 
         try:
-            if os.path.exists(subfolder_path) and files_processed_successfully:
+            if os.path.exists(subfolder_path):
                 shutil.rmtree(subfolder_path)
                 moved_subfolders_count += 1
                 st.success(f"✅ Processed subfolder '{subfolder_name}' and moved contents to: {destination_subfolder_path}")
@@ -796,6 +773,8 @@ def process_folder(folder_path, selected_questions):
 
         progress_bar.progress((i + 1) / total_subfolders)
 
+    if error_files:
+        st.warning(f"⚠️ The following files failed to process: {', '.join(error_files)}")
     st.success(f"✅ Successfully attempted to process {total_subfolders} subfolders. Moved {moved_subfolders_count} subfolders.")
     
 
