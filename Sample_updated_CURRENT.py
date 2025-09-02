@@ -1223,34 +1223,39 @@ def user_ui():
                     st.error("⚠️ Please upload a ZIP file before processing.")
                 else:
                     process_zip_file(uploaded_zip, selected_questions)
-                    st.session_state["show_zip_download"] = True
-
-        # MOVED: Show ZIP download button after processing (not in sidebar)
-        if st.session_state.get("show_zip_download", False) and st.session_state["app_config"]["output_folder"]:
-            st.markdown("---")
-            st.subheader("📦 Download All Responses")
-            
-            # Create download button in main area
-            zip_buffer = create_zip_and_download(st.session_state["app_config"]["output_folder"])
-            if zip_buffer:
+    # Show responses and download button after processing
+    if st.session_state.get("show_zip_download", False):
+        st.markdown("---")
+        st.subheader("📦 Download All Responses")
+        # Show all responses from session state
+        if "zip_responses" in st.session_state:
+            for resp in st.session_state["zip_responses"]:
+                st.text_area(f"Response for {resp['display_name']}", resp["response"], height=150, key=f"response_{resp['original_name']}")
                 st.download_button(
-                    label="📦 Download All Responses as ZIP",
-                    data=zip_buffer,
-                    file_name="all_responses.zip",
-                    mime="application/zip",
-                    key="main_zip_download"
+                    label=f"📥 Download Response for {resp['display_name']}",
+                    data=resp["response"],
+                    file_name=resp["clean_filename"],
+                    mime="text/plain",
+                    key=f"download_{resp['original_name']}"
                 )
+        zip_buffer = create_zip_and_download(st.session_state["app_config"]["output_folder"])
+        if zip_buffer:
+            st.download_button(
+                label="📦 Download All Responses as ZIP",
+                data=zip_buffer,
+                file_name="all_responses.zip",
+                mime="application/zip",
+                key="main_zip_download"
+            )
 
 # SOLUTION 4: Updated process_zip_file function with ordered processing and clean filenames
 def process_zip_file(zip_file, selected_questions):
     temp_dir = tempfile.mkdtemp()
-    # 🔥 Clean output folder before new processing
     output_folder = st.session_state["app_config"]["output_folder"]
     if os.path.exists(output_folder):
         for f in os.listdir(output_folder):
             if f.endswith(".txt"):
                 os.remove(os.path.join(output_folder, f))
-
     try:
         with zipfile.ZipFile(zip_file, 'r') as zip_ref:
             zip_ref.extractall(temp_dir)
@@ -1262,7 +1267,7 @@ def process_zip_file(zip_file, selected_questions):
         if not supported_files:
             st.warning("⚠ No supported files (.html/.htm/.txt) found in the zip.")
             return
-        
+        st.session_state["zip_responses"] = []
         for file_path in supported_files:
             original_name = os.path.basename(file_path)
             st.info(f"📄 Processing file: {original_name}")
@@ -1272,24 +1277,22 @@ def process_zip_file(zip_file, selected_questions):
             else:
                 response = "Error: Could not process this file."
                 clean_filename = extract_filename(original_name)
-
-            # Create clean display name (remove HN/YB prefix but keep letter after it)
+            # Debug: Log missing file info
+            if clean_filename == "68334.txt":
+                st.warning(f"DEBUG: File {original_name} processed, clean_filename={clean_filename}, response={response[:100]}")
             import re
             display_name = re.sub(r'^(HN|YB)([a-zA-Z]\d+)_.*', r'\2', os.path.splitext(original_name)[0]) + os.path.splitext(original_name)[1]
-            st.text_area(f"Response for {display_name}", response, height=150, key=f"response_{original_name}")
-            st.download_button(
-                label=f"📥 Download Response for {display_name}",
-                data=response,
-                file_name=clean_filename,
-                mime="text/plain",
-                key=f"download_{original_name}"
-            )
+            st.session_state["zip_responses"].append({
+                "display_name": display_name,
+                "response": response,
+                "clean_filename": clean_filename,
+                "original_name": original_name
+            })
             st.session_state["processed_files_count"] += 1
-
+        st.session_state["show_zip_download"] = True
+        st.success("🎉 Process Completed")
     finally:
         shutil.rmtree(temp_dir)
-        st.success("🎉 Process Completed")
-
 
 # SOLUTION 5: New function to create ZIP buffer (replaces create_zip_and_download)
 # SOLUTION 5: Updated function to replace create_zip_and_download
