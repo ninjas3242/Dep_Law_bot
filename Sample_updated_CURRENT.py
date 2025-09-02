@@ -599,6 +599,7 @@ def process_html(file_path, file_name, selected_questions):
     formatted_prompt = generate_prompt(extracted_text, selected_questions)
 
     response = None
+    error_occurred = False
     try:
         if config["model_provider"] == "Google Gemini":
             if not st.session_state.get("gemini_api_configured", False):
@@ -609,35 +610,35 @@ def process_html(file_path, file_name, selected_questions):
                     st.info("🔑 Configured Gemini API key")
                 else:
                     st.error("❌ No API key available. Please contact admin.")
-                    return None
-            response = get_gemini_response(formatted_prompt)
+                    response = "Error: No API key available."
+                    error_occurred = True
+            if not error_occurred:
+                response = get_gemini_response(formatted_prompt)
         else:
             response = get_deepseek_response(formatted_prompt, config["ollama_model"])
     except Exception as e:
         st.error(f"❌ Error generating response: {e}")
-        return None
+        response = f"Error: Could not process file due to: {e}"
+        error_occurred = True
 
-    if response:
-        txt_file_name = extract_filename(file_name)
-        # Save response to output folder
-        txt_output_path = os.path.join(output_subfolder, txt_file_name)
-        with open(txt_output_path, "w", encoding="utf-8") as f:
-            f.write(response)
+    txt_file_name = extract_filename(file_name)
+    txt_output_path = os.path.join(output_subfolder, txt_file_name)
+    # Always write a response file, even if error
+    with open(txt_output_path, "w", encoding="utf-8") as f:
+        f.write(response if response else "Error: No response generated.")
 
-        # Move processed file to completed folder
-        if not os.path.exists(completed_folder):
-            os.makedirs(completed_folder, exist_ok=True)
+    # Move processed file to completed folder
+    if not os.path.exists(completed_folder):
+        os.makedirs(completed_folder, exist_ok=True)
 
-        try:
-            destination_path = os.path.join(completed_folder, file_name)
-            shutil.move(file_path, destination_path)
-            st.success(f"✅ Moved processed file to: {destination_path}")
-        except Exception as e:
-            st.error(f"❌ Error moving processed file: {e}")
+    try:
+        destination_path = os.path.join(completed_folder, file_name)
+        shutil.move(file_path, destination_path)
+        st.success(f"✅ Moved processed file to: {destination_path}")
+    except Exception as e:
+        st.error(f"❌ Error moving processed file: {e}")
 
-        return response, txt_file_name  # Return both response and clean filename
-    else:
-        return None
+    return response, txt_file_name  # Return both response and clean filename
 
 # SOLUTION 2: Updated process_html_in_folder function
 def process_html_in_folder(file_path, file_name, selected_questions, destination_subfolder):
@@ -672,6 +673,7 @@ def process_html_in_folder(file_path, file_name, selected_questions, destination
     formatted_prompt = generate_prompt(extracted_text, selected_questions)
 
     response = None
+    error_occurred = False
     try:
         if config["model_provider"] == "Google Gemini":
             if not st.session_state.get("gemini_api_configured", False):
@@ -682,32 +684,32 @@ def process_html_in_folder(file_path, file_name, selected_questions, destination
                     st.info("🔑 Configured Gemini API key")
                 else:
                     st.error("❌ No API key available. Please contact admin.")
-                    return None
-            response = get_gemini_response(formatted_prompt)
+                    response = "Error: No API key available."
+                    error_occurred = True
+            if not error_occurred:
+                response = get_gemini_response(formatted_prompt)
         else:
             response = get_deepseek_response(formatted_prompt, config["ollama_model"])
     except Exception as e:
         st.error(f"❌ Error generating response: {e}")
-        return None
+        response = f"Error: Could not process file due to: {e}"
+        error_occurred = True
 
-    if response:
-        txt_file_name = extract_filename(file_name)
-        # Save response to output subfolder
-        txt_output_path = os.path.join(output_subfolder, txt_file_name)
-        with open(txt_output_path, "w", encoding="utf-8") as f:
-            f.write(response)
+    txt_file_name = extract_filename(file_name)
+    txt_output_path = os.path.join(output_subfolder, txt_file_name)
+    # Always write a response file, even if error
+    with open(txt_output_path, "w", encoding="utf-8") as f:
+        f.write(response if response else "Error: No response generated.")
 
-        # Move processed HTML file to completed subfolder instead of root completed folder
-        try:
-            destination_path = os.path.join(destination_subfolder, file_name)
-            shutil.copy2(file_path, destination_path)  # Copy the file to destination first
-            st.success(f"✅ Copied processed file to: {destination_path}")
-        except Exception as e:
-            st.error(f"❌ Error copying processed file: {e}")
+    # Move processed HTML file to completed subfolder instead of root completed folder
+    try:
+        destination_path = os.path.join(destination_subfolder, file_name)
+        shutil.copy2(file_path, destination_path)  # Copy the file to destination first
+        st.success(f"✅ Copied processed file to: {destination_path}")
+    except Exception as e:
+        st.error(f"❌ Error copying processed file: {e}")
 
-        return response, txt_file_name  # Return both response and clean filename
-    else:
-        return None
+    return response, txt_file_name  # Return both response and clean filename
     
 def process_folder(folder_path, selected_questions):
     if not check_internet_connection():
@@ -1264,34 +1266,26 @@ def process_zip_file(zip_file, selected_questions):
         for file_path in supported_files:
             original_name = os.path.basename(file_path)
             st.info(f"📄 Processing file: {original_name}")
-            
             result = process_html(file_path, original_name, selected_questions)
             if result:
                 response, clean_filename = result
-                
-                # Create clean display name (remove HN/YB prefix but keep letter after it)
-                import re
-                # Pattern: YBz11963_1005.htm -> z11963.htm
-                display_name = re.sub(r'^(HN|YB)([a-zA-Z]\d+)_.*', r'\2', os.path.splitext(original_name)[0]) + os.path.splitext(original_name)[1]
-                
-                # # If no pattern match, try simpler pattern
-                # if display_name == original_name:
-                #     display_name = re.sub(r'^[A-Z]{2}\d+_', '', original_name)
-                
-                st.text_area(f"Response for {display_name}", response, height=150, key=f"response_{original_name}")
-                
-                # KEEP: Individual download button under each response with clean filename
-                st.download_button(
-                    label=f"📥 Download Response for {display_name}",
-                    data=response,
-                    file_name=clean_filename,  # Use cleaned filename
-                    mime="text/plain",
-                    key=f"download_{original_name}"
-                )
-                
-                st.session_state["processed_files_count"] += 1
-                
-    
+            else:
+                response = "Error: Could not process this file."
+                clean_filename = extract_filename(original_name)
+
+            # Create clean display name (remove HN/YB prefix but keep letter after it)
+            import re
+            display_name = re.sub(r'^(HN|YB)([a-zA-Z]\d+)_.*', r'\2', os.path.splitext(original_name)[0]) + os.path.splitext(original_name)[1]
+            st.text_area(f"Response for {display_name}", response, height=150, key=f"response_{original_name}")
+            st.download_button(
+                label=f"📥 Download Response for {display_name}",
+                data=response,
+                file_name=clean_filename,
+                mime="text/plain",
+                key=f"download_{original_name}"
+            )
+            st.session_state["processed_files_count"] += 1
+
     finally:
         shutil.rmtree(temp_dir)
         st.success("🎉 Process Completed")
