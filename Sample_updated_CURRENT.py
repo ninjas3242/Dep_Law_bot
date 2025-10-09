@@ -567,13 +567,10 @@ def read_txt_file(file_path):
 # SOLUTION 1: Fix file naming in process_html function
 # Replace the existing process_html function with this updated version
 
-def process_html(file_path):
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            return f.read()
-    except UnicodeDecodeError:
-        with open(file_path, 'r', encoding='latin-1') as f:
-            return f.read()
+def process_html(file_path, file_name, selected_questions):
+    if not check_internet_connection():
+        st.error("❌ No internet connection. Cannot process file.")
+        return None
 
     config = st.session_state["app_config"]
     output_folder = config["output_folder"]
