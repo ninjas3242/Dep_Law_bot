@@ -510,42 +510,35 @@ def get_gemini_response(prompt):
     
     # If no models configured, get all available models automatically
     if not model_sequence:
-        st.info("🔄 No models configured. Fetching ALL available Gemini models...")
         model_sequence = get_available_gemini_models()
         if not model_sequence:
             st.error("❌ No Gemini models available.")
             return "❌ No Gemini models available."
-        # Update session state with all available models
         st.session_state["app_config"]["gemini_model_sequence"] = model_sequence
-        st.info(f"✅ Auto-configured ALL {len(model_sequence)} Gemini models!")
 
+    failed_models = []
+    
     for i, model in enumerate(model_sequence):
-        st.info(f"⏳ Attempting **{model}** (Model {i+1}/{len(model_sequence)})...")
         try:
             model_instance = genai.GenerativeModel(model)
             response = model_instance.generate_content(
                 prompt,
                 generation_config={"temperature": temperature}
             )
-            st.success(f"✅ Response received from **{model}**!")
             return f"[Response from: {model}]\n\n{response.text}"
         except Exception as e:
             error_msg = str(e).lower()
             if "quota" in error_msg or "rate limit" in error_msg or "resource_exhausted" in error_msg or "429" in str(e):
-                st.warning(f"⚠ Quota/Rate limit exceeded for **{model}** (Model {i+1}/{len(model_sequence)}), trying next model...")
+                failed_models.append(model)
                 if i < len(model_sequence) - 1:
                     continue
-                else:
-                    st.warning("⚠ All Gemini models exhausted. Switching to DeepSeek...")
-                    break
             else:
-                st.error(f"❌ Error with model **{model}**: {e}")
-                return f"❌ Error with {model}: {e}"  # Stop on non-quota errors
+                return f"❌ Error with {model}: {e}"
 
-    # If all Gemini models failed, switch to DeepSeek
-    st.warning("⚠ All configured Gemini models have failed. Switching to DeepSeek...")
+    # All models failed due to quota limits
+    st.error(f"❌ All {len(failed_models)} Gemini models quota exceeded: {', '.join(failed_models)}")
     deepseek_response = get_deepseek_response(prompt, st.session_state["app_config"]["ollama_model"])
-    return f"[Response from: DeepSeek - {st.session_state['app_config']['ollama_model']}]\n\n{deepseek_response}"
+    return f"[All Gemini models quota exceeded. Response from: DeepSeek]\n\n{deepseek_response}"
 
 def get_deepseek_response(prompt, selected_model):
     if not check_internet_connection():
@@ -913,6 +906,7 @@ def admin_ui():
                         st.session_state["app_config"]["gemini_model_sequence"] = st.session_state["available_gemini_models"]
                         st.session_state["model_sequence_inputs"] = st.session_state["available_gemini_models"] + [None]
                         st.success(f"✅ Auto-configured ALL {len(st.session_state['available_gemini_models'])} models!")
+                        st.info(f"📋 Models: {', '.join(st.session_state['available_gemini_models'][:5])}{'...' if len(st.session_state['available_gemini_models']) > 5 else ''}")
                         st.rerun()
             
             gemini_models = st.session_state["available_gemini_models"]
@@ -946,7 +940,12 @@ def admin_ui():
             st.session_state["app_config"]["gemini_model_sequence"] = [model for model in updated_sequence if model]
 
             if st.session_state["app_config"]["gemini_model_sequence"]:
-                st.markdown(f"**Current Model Sequence:** {', '.join(st.session_state['app_config']['gemini_model_sequence'])}")
+                sequence = st.session_state['app_config']['gemini_model_sequence']
+                display_sequence = ', '.join(sequence[:5]) + ('...' if len(sequence) > 5 else '')
+                st.markdown(f"**Current Model Sequence ({len(sequence)} models):** {display_sequence}")
+                if len(sequence) > 5:
+                    with st.expander(f"View all {len(sequence)} models"):
+                        st.write(', '.join(sequence))
                 st.session_state["app_config"]["selected_model"] = st.session_state["app_config"]["gemini_model_sequence"][0] # Set the first model as the initial selected one
             else:
                 st.warning("⚠️ Please select at least one Gemini model in the sequence.")
