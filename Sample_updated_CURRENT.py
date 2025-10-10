@@ -193,7 +193,7 @@ def login(email, password):
 
         st.session_state["app_config"]["output_folder"] = output_path or "output_files"
         st.session_state["app_config"]["completed_folder"] = completed_path or "completed_files"
-        st.success(f"📁 Folder paths loaded for {email}")
+            
 
         # Default fallback if API key is missing
         if not db_api_key:
