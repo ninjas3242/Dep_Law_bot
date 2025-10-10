@@ -137,7 +137,7 @@ def save_configuration():
             """,
             (
                 json.dumps(st.session_state["app_config"]["gemini_model_sequence"]),
-            )  # ← note the comma here
+            )  
         )
         conn.commit()
         st.success("✅ Configuration saved to Supabase.")
@@ -193,7 +193,7 @@ def login(email, password):
 
         st.session_state["app_config"]["output_folder"] = output_path or "output_files"
         st.session_state["app_config"]["completed_folder"] = completed_path or "completed_files"
-            
+        
 
         # Default fallback if API key is missing
         if not db_api_key:
@@ -554,13 +554,14 @@ def read_txt_file(file_path):
     """
     Reads a text file and returns its content.
     """
-
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            file_content = f.read()
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            return f.read()
     except UnicodeDecodeError:
+        # Try another encoding if UTF-8 fails
         with open(file_path, "r", encoding="latin-1") as f:
-            file_content = f.read()            
+            return f.read()
+        
 
 
 # SOLUTION 1: Fix file naming in process_html function
@@ -586,8 +587,12 @@ def process_html(file_path, file_name, selected_questions):
     file_extension = os.path.splitext(file_name)[1].lower()
     
     if file_extension in ['.html', '.htm']:
-        with open(file_path, "r", encoding="utf-8") as f:
-            file_content = f.read()
+        try:
+            with open(file_path, "r", encoding="utf-8",errors="ignore") as f:
+                file_content = f.read()
+        except UnicodeDecodeError:
+            with open(file_path, "r", encoding="latin-1") as f:
+                file_content = f.read()
         extracted_text = extract_text_from_html(file_content)
     elif file_extension in ['.txt']:
         extracted_text = read_txt_file(file_path)
@@ -660,8 +665,12 @@ def process_html_in_folder(file_path, file_name, selected_questions, destination
     file_extension = os.path.splitext(file_name)[1].lower()
     
     if file_extension in ['.html', '.htm']:
-        with open(file_path, "r", encoding="utf-8") as f:
-            file_content = f.read()
+        try:
+            with open(file_path, "r", encoding="utf-8",) as f:
+                file_content = f.read()
+        except UnicodeDecodeError:
+            with open(file_path, "r", encoding="latin-1") as f:
+                file_content = f.read()
         extracted_text = extract_text_from_html(file_content)
     elif file_extension in ['.txt']:
         extracted_text = read_txt_file(file_path)
@@ -1308,8 +1317,12 @@ def create_zip_and_download(output_folder):
                     if file.endswith(".txt"):
                         file_path = os.path.join(root, file)
                         try:
-                            with open(file_path, "r", encoding="utf-8") as f:
-                                content = f.read().strip()
+                            try:
+                                with open(file_path, "r", encoding="utf-8",errors="ignore") as f:
+                                    content = f.read().strip()
+                            except UnicodeDecodeError:
+                                with open(file_path, "r", encoding="latin-1") as f:
+                                    content = f.read().strip()
                             arcname = os.path.relpath(file_path, output_folder)
                             zipf.writestr(arcname, content)
                             files_added += 1
