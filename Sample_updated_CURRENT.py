@@ -500,32 +500,47 @@ def generate_prompt(extracted_text, selected_questions):
     prompt += "- If a task cannot be answered, state 'Information not available.'\n"
     return prompt
 
-def get_gemini_response(prompt): # Removed selected_model argument
+def get_gemini_response(prompt):
     if not check_internet_connection():
         st.error("❌ No internet connection. Cannot get Gemini response.")
         return "❌ No internet connection."
 
     temperature = st.session_state["app_config"].get("temperature")
     model_sequence = st.session_state["app_config"].get("gemini_model_sequence", [])
+    
+    # If no models configured, get all available models automatically
+    if not model_sequence:
+        st.info("🔄 No models configured. Fetching ALL available Gemini models...")
+        model_sequence = get_available_gemini_models()
+        if not model_sequence:
+            st.error("❌ No Gemini models available.")
+            return "❌ No Gemini models available."
+        # Update session state with all available models
+        st.session_state["app_config"]["gemini_model_sequence"] = model_sequence
+        st.info(f"✅ Auto-configured ALL {len(model_sequence)} Gemini models!")
 
-    for model in model_sequence:
-        st.info(f"⏳ Attempting to get response from **{model}**...") # Inform the user
+    for i, model in enumerate(model_sequence):
+        st.info(f"⏳ Attempting **{model}** (Model {i+1}/{len(model_sequence)})...")
         try:
             model_instance = genai.GenerativeModel(model)
             response = model_instance.generate_content(
                 prompt,
                 generation_config={"temperature": temperature}
             )
-            st.success(f"✅ Response received from **{model}**!") # Indicate success
-            return f"[Response from: {model}]\n\n{response.text}" # Add model name to response
+            st.success(f"✅ Response received from **{model}**!")
+            return f"[Response from: {model}]\n\n{response.text}"
         except Exception as e:
             error_msg = str(e).lower()
-            if "quota" in error_msg or "rate limit" in error_msg:
-                st.warning(f"⚠ Quota exceeded for {model}, trying next model...")
-                continue # Try the next model in the sequence
+            if "quota" in error_msg or "rate limit" in error_msg or "resource_exhausted" in error_msg or "429" in str(e):
+                st.warning(f"⚠ Quota/Rate limit exceeded for **{model}** (Model {i+1}/{len(model_sequence)}), trying next model...")
+                if i < len(model_sequence) - 1:
+                    continue
+                else:
+                    st.warning("⚠ All Gemini models exhausted. Switching to DeepSeek...")
+                    break
             else:
-                st.error(f"❌ Error with model {model}: {e}")
-                return f"❌ Error with model {model}: {e}"
+                st.error(f"❌ Error with model **{model}**: {e}")
+                return f"❌ Error with {model}: {e}"  # Stop on non-quota errors
 
     # If all Gemini models failed, switch to DeepSeek
     st.warning("⚠ All configured Gemini models have failed. Switching to DeepSeek...")
@@ -789,7 +804,7 @@ def process_folder(folder_path, selected_questions):
     
 
 def get_available_gemini_models():
-    """Dynamically fetch available Gemini models from the Google Generative AI API."""
+    """Dynamically fetch ALL available Gemini models from the Google Generative AI API."""
     if not check_internet_connection():
         st.error("❌ No internet connection. Cannot fetch Gemini models.")
         return []
@@ -801,30 +816,37 @@ def get_available_gemini_models():
             # Try to get from user session if available
             api_key = st.session_state["user"].get("api_key") if "user" in st.session_state else None
             if not api_key:
-                st.warning("⚠️ No API key available. Using default model list.")
-                # Return a default list as fallback
-                return ["gemini-1.5-pro-latest", "gemini-1.5-flash-latest"]
+                st.warning("⚠️ No API key available. Cannot fetch models.")
+                return []
         
         # Configure the API with the available key
         genai.configure(api_key=api_key)
         
-        # Get list of available models
+        # Get ALL available models
         models = genai.list_models()
-        # Filter for only Gemini models that support generateContent
-        gemini_models = [
-            model.name.split('/')[-1]
-            for model in models
-            if 'gemini' in model.name.lower() and getattr(model, "supported_generation_methods", None) and "generateContent" in model.supported_generation_methods
-        ]
+        # Filter for Gemini models that support generateContent
+        gemini_models = []
+        for model in models:
+            model_name = model.name.split('/')[-1]
+            # Include all gemini models that support generateContent
+            if ('gemini' in model_name.lower() and 
+                hasattr(model, 'supported_generation_methods') and 
+                'generateContent' in model.supported_generation_methods):
+                gemini_models.append(model_name)
+        
+        # Sort models for better organization
+        gemini_models.sort()
+        
         if not gemini_models:
-            st.warning("⚠️ No Gemini models found. Using default model list.")
-            return ["gemini-1.5-pro-latest", "gemini-1.5-flash-latest"]
+            st.warning("⚠️ No Gemini models found with generateContent support.")
+            return []
+            
+        st.success(f"✅ Found {len(gemini_models)} available Gemini models!")
         return gemini_models
 
     except Exception as e:
         st.error(f"❌ Error fetching Gemini models: {e}")
-        # Return a default list as fallback
-        return ["gemini-1.5-pro-latest", "gemini-1.5-flash-latest"]
+        return []
     
 def admin_ui():
     st.title("⚙️ Admin Panel")
@@ -879,10 +901,19 @@ def admin_ui():
 
         if model_provider == "Google Gemini":
         # Dynamically fetch available Gemini models
-            if "available_gemini_models" not in st.session_state or st.button("🔄 Refresh Model List"):
-                st.session_state["available_gemini_models"] = get_available_gemini_models()
-                if st.session_state["available_gemini_models"]:
-                    st.success(f"✅ Found {len(st.session_state['available_gemini_models'])} Gemini models!")
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                if "available_gemini_models" not in st.session_state:
+                    st.session_state["available_gemini_models"] = get_available_gemini_models()
+            with col2:
+                if st.button("🔄 Get ALL Models"):
+                    st.session_state["available_gemini_models"] = get_available_gemini_models()
+                    # Auto-populate with ALL available models
+                    if st.session_state["available_gemini_models"]:
+                        st.session_state["app_config"]["gemini_model_sequence"] = st.session_state["available_gemini_models"]
+                        st.session_state["model_sequence_inputs"] = st.session_state["available_gemini_models"] + [None]
+                        st.success(f"✅ Auto-configured ALL {len(st.session_state['available_gemini_models'])} models!")
+                        st.rerun()
             
             gemini_models = st.session_state["available_gemini_models"]
             
@@ -1230,6 +1261,7 @@ def user_ui():
                 if uploaded_zip is None:
                     st.error("⚠️ Please upload a ZIP file before processing.")
                 else:
+                    st.session_state["processing_stopped"] = False  # Reset stop flag
                     process_zip_file(uploaded_zip, selected_questions)
     # Show responses and download button after processing
     if st.session_state.get("show_zip_download", False):
@@ -1256,7 +1288,7 @@ def user_ui():
                 key="main_zip_download"
             )
 
-# SOLUTION 4: Updated process_zip_file function with ordered processing and clean filenames
+# SOLUTION 4: Updated process_zip_file function with stop functionality
 def process_zip_file(zip_file, selected_questions):
     temp_dir = tempfile.mkdtemp()
     output_folder = st.session_state["app_config"]["output_folder"]
@@ -1275,19 +1307,43 @@ def process_zip_file(zip_file, selected_questions):
         if not supported_files:
             st.warning("⚠ No supported files (.html/.htm/.txt) found in the zip.")
             return
+        
+        # Initialize processing state
         st.session_state["zip_responses"] = []
-        for file_path in supported_files:
+        st.session_state["processing_stopped"] = False
+        
+        # Create stop button placeholder
+        stop_placeholder = st.empty()
+        progress_placeholder = st.empty()
+        
+        total_files = len(supported_files)
+        for i, file_path in enumerate(supported_files):
+            # Check if stop was requested
+            if st.session_state.get("processing_stopped", False):
+                st.warning(f"⏹️ Processing stopped. {i}/{total_files} files processed.")
+                break
+                
+            # Show stop button and progress
+            with stop_placeholder.container():
+                col1, col2 = st.columns([1, 4])
+                with col1:
+                    if st.button("⏹️ Stop", key=f"stop_btn_{i}"):
+                        st.session_state["processing_stopped"] = True
+                        st.rerun()
+                with col2:
+                    st.progress((i + 1) / total_files, text=f"Processing {i+1}/{total_files} files")
+            
             original_name = os.path.basename(file_path)
-            st.info(f"📄 Processing file: {original_name}")
+            with progress_placeholder.container():
+                st.info(f"📄 Processing file: {original_name}")
+            
             result = process_html(file_path, original_name, selected_questions)
             if result:
                 response, clean_filename = result
             else:
                 response = "Error: Could not process this file."
                 clean_filename = extract_filename(original_name)
-            # Debug: Log missing file info
-            if clean_filename == "68334.txt":
-                st.warning(f"DEBUG: File {original_name} processed, clean_filename={clean_filename}, response={response[:100]}")
+            
             import re
             display_name = re.sub(r'^(HN|YB)([a-zA-Z]\d+)_.*', r'\2', os.path.splitext(original_name)[0]) + os.path.splitext(original_name)[1]
             st.session_state["zip_responses"].append({
@@ -1297,10 +1353,19 @@ def process_zip_file(zip_file, selected_questions):
                 "original_name": original_name
             })
             st.session_state["processed_files_count"] += 1
+        
+        # Clear stop button and progress
+        stop_placeholder.empty()
+        progress_placeholder.empty()
+        
         st.session_state["show_zip_download"] = True
-        st.success("🎉 Process Completed")
+        if st.session_state.get("processing_stopped", False):
+            st.success(f"⏹️ Processing stopped. {len(st.session_state['zip_responses'])} files ready for download.")
+        else:
+            st.success("🎉 Process Completed")
     finally:
         shutil.rmtree(temp_dir)
+        st.session_state["processing_stopped"] = False
 
 # SOLUTION 5: New function to create ZIP buffer (replaces create_zip_and_download)
 # SOLUTION 5: Updated function to replace create_zip_and_download
