@@ -554,14 +554,13 @@ def read_txt_file(file_path):
     """
     Reads a text file and returns its content.
     """
+
     try:
         with open(file_path, "r", encoding="utf-8") as f:
-            return f.read()
+            file_content = f.read()
     except UnicodeDecodeError:
-        # Try another encoding if UTF-8 fails
         with open(file_path, "r", encoding="latin-1") as f:
-            return f.read()
-        
+            file_content = f.read()            
 
 
 # SOLUTION 1: Fix file naming in process_html function
