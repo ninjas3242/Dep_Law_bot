@@ -510,35 +510,42 @@ def get_gemini_response(prompt):
     
     # If no models configured, get all available models automatically
     if not model_sequence:
+        st.info("🔄 No models configured. Fetching ALL available Gemini models...")
         model_sequence = get_available_gemini_models()
         if not model_sequence:
             st.error("❌ No Gemini models available.")
             return "❌ No Gemini models available."
+        # Update session state with all available models
         st.session_state["app_config"]["gemini_model_sequence"] = model_sequence
+        st.info(f"✅ Auto-configured ALL {len(model_sequence)} Gemini models!")
 
-    failed_models = []
-    
     for i, model in enumerate(model_sequence):
+        st.info(f"⏳ Attempting **{model}** (Model {i+1}/{len(model_sequence)})...")
         try:
             model_instance = genai.GenerativeModel(model)
             response = model_instance.generate_content(
                 prompt,
                 generation_config={"temperature": temperature}
             )
+            st.success(f"✅ Response received from **{model}**!")
             return f"[Response from: {model}]\n\n{response.text}"
         except Exception as e:
             error_msg = str(e).lower()
             if "quota" in error_msg or "rate limit" in error_msg or "resource_exhausted" in error_msg or "429" in str(e):
-                failed_models.append(model)
+                st.warning(f"⚠ Quota/Rate limit exceeded for **{model}** (Model {i+1}/{len(model_sequence)}), trying next model...")
                 if i < len(model_sequence) - 1:
                     continue
+                else:
+                    st.warning("⚠ All Gemini models exhausted. Switching to DeepSeek...")
+                    break
             else:
-                return f"❌ Error with {model}: {e}"
+                st.error(f"❌ Error with model **{model}**: {e}")
+                return f"❌ Error with {model}: {e}"  # Stop on non-quota errors
 
-    # All models failed due to quota limits
-    st.error(f"❌ All {len(failed_models)} Gemini models quota exceeded: {', '.join(failed_models)}")
+    # If all Gemini models failed, switch to DeepSeek
+    st.warning("⚠ All configured Gemini models have failed. Switching to DeepSeek...")
     deepseek_response = get_deepseek_response(prompt, st.session_state["app_config"]["ollama_model"])
-    return f"[All Gemini models quota exceeded. Response from: DeepSeek]\n\n{deepseek_response}"
+    return f"[Response from: DeepSeek - {st.session_state['app_config']['ollama_model']}]\n\n{deepseek_response}"
 
 def get_deepseek_response(prompt, selected_model):
     if not check_internet_connection():
@@ -906,7 +913,6 @@ def admin_ui():
                         st.session_state["app_config"]["gemini_model_sequence"] = st.session_state["available_gemini_models"]
                         st.session_state["model_sequence_inputs"] = st.session_state["available_gemini_models"] + [None]
                         st.success(f"✅ Auto-configured ALL {len(st.session_state['available_gemini_models'])} models!")
-                        st.info(f"📋 Models: {', '.join(st.session_state['available_gemini_models'][:5])}{'...' if len(st.session_state['available_gemini_models']) > 5 else ''}")
                         st.rerun()
             
             gemini_models = st.session_state["available_gemini_models"]
@@ -940,12 +946,7 @@ def admin_ui():
             st.session_state["app_config"]["gemini_model_sequence"] = [model for model in updated_sequence if model]
 
             if st.session_state["app_config"]["gemini_model_sequence"]:
-                sequence = st.session_state['app_config']['gemini_model_sequence']
-                display_sequence = ', '.join(sequence[:5]) + ('...' if len(sequence) > 5 else '')
-                st.markdown(f"**Current Model Sequence ({len(sequence)} models):** {display_sequence}")
-                if len(sequence) > 5:
-                    with st.expander(f"View all {len(sequence)} models"):
-                        st.write(', '.join(sequence))
+                st.markdown(f"**Current Model Sequence:** {', '.join(st.session_state['app_config']['gemini_model_sequence'])}")
                 st.session_state["app_config"]["selected_model"] = st.session_state["app_config"]["gemini_model_sequence"][0] # Set the first model as the initial selected one
             else:
                 st.warning("⚠️ Please select at least one Gemini model in the sequence.")
@@ -1260,7 +1261,6 @@ def user_ui():
                 if uploaded_zip is None:
                     st.error("⚠️ Please upload a ZIP file before processing.")
                 else:
-                    st.session_state["processing_stopped"] = False  # Reset stop flag
                     process_zip_file(uploaded_zip, selected_questions)
     # Show responses and download button after processing
     if st.session_state.get("show_zip_download", False):
@@ -1287,7 +1287,7 @@ def user_ui():
                 key="main_zip_download"
             )
 
-# SOLUTION 4: Updated process_zip_file function with stop functionality
+# SOLUTION 4: Updated process_zip_file function with ordered processing and clean filenames
 def process_zip_file(zip_file, selected_questions):
     temp_dir = tempfile.mkdtemp()
     output_folder = st.session_state["app_config"]["output_folder"]
@@ -1306,43 +1306,19 @@ def process_zip_file(zip_file, selected_questions):
         if not supported_files:
             st.warning("⚠ No supported files (.html/.htm/.txt) found in the zip.")
             return
-        
-        # Initialize processing state
         st.session_state["zip_responses"] = []
-        st.session_state["processing_stopped"] = False
-        
-        # Create stop button placeholder
-        stop_placeholder = st.empty()
-        progress_placeholder = st.empty()
-        
-        total_files = len(supported_files)
-        for i, file_path in enumerate(supported_files):
-            # Check if stop was requested
-            if st.session_state.get("processing_stopped", False):
-                st.warning(f"⏹️ Processing stopped. {i}/{total_files} files processed.")
-                break
-                
-            # Show stop button and progress
-            with stop_placeholder.container():
-                col1, col2 = st.columns([1, 4])
-                with col1:
-                    if st.button("⏹️ Stop", key=f"stop_btn_{i}"):
-                        st.session_state["processing_stopped"] = True
-                        st.rerun()
-                with col2:
-                    st.progress((i + 1) / total_files, text=f"Processing {i+1}/{total_files} files")
-            
+        for file_path in supported_files:
             original_name = os.path.basename(file_path)
-            with progress_placeholder.container():
-                st.info(f"📄 Processing file: {original_name}")
-            
+            st.info(f"📄 Processing file: {original_name}")
             result = process_html(file_path, original_name, selected_questions)
             if result:
                 response, clean_filename = result
             else:
                 response = "Error: Could not process this file."
                 clean_filename = extract_filename(original_name)
-            
+            # Debug: Log missing file info
+            if clean_filename == "68334.txt":
+                st.warning(f"DEBUG: File {original_name} processed, clean_filename={clean_filename}, response={response[:100]}")
             import re
             display_name = re.sub(r'^(HN|YB)([a-zA-Z]\d+)_.*', r'\2', os.path.splitext(original_name)[0]) + os.path.splitext(original_name)[1]
             st.session_state["zip_responses"].append({
@@ -1352,19 +1328,10 @@ def process_zip_file(zip_file, selected_questions):
                 "original_name": original_name
             })
             st.session_state["processed_files_count"] += 1
-        
-        # Clear stop button and progress
-        stop_placeholder.empty()
-        progress_placeholder.empty()
-        
         st.session_state["show_zip_download"] = True
-        if st.session_state.get("processing_stopped", False):
-            st.success(f"⏹️ Processing stopped. {len(st.session_state['zip_responses'])} files ready for download.")
-        else:
-            st.success("🎉 Process Completed")
+        st.success("🎉 Process Completed")
     finally:
         shutil.rmtree(temp_dir)
-        st.session_state["processing_stopped"] = False
 
 # SOLUTION 5: New function to create ZIP buffer (replaces create_zip_and_download)
 # SOLUTION 5: Updated function to replace create_zip_and_download
