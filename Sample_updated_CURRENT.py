@@ -846,9 +846,9 @@ def process_folder(folder_path, selected_questions):
     
 
 def get_available_gemini_models():
-    """Dynamically fetch ALL available Gemini models from the Google Generative AI API."""
+    """Dynamically fetch ALL available models from the Google Generative AI API."""
     if not check_internet_connection():
-        st.error("❌ No internet connection. Cannot fetch Gemini models.")
+        st.error("❌ No internet connection. Cannot fetch models.")
         return []
     
     try:
@@ -864,30 +864,22 @@ def get_available_gemini_models():
         # Configure the API with the available key
         genai.configure(api_key=api_key)
         
-        # Get ALL available models
+        # Get ALL available models without filtering
         models = genai.list_models()
-        # Filter for Gemini models that support generateContent
-        gemini_models = []
-        for model in models:
-            model_name = model.name.split('/')[-1]
-            # Include all gemini models that support generateContent
-            if ('gemini' in model_name.lower() and 
-                hasattr(model, 'supported_generation_methods') and 
-                'generateContent' in model.supported_generation_methods):
-                gemini_models.append(model_name)
+        all_models = [model.name.split('/')[-1] for model in models]
         
         # Sort models for better organization
-        gemini_models.sort()
+        all_models.sort()
         
-        if not gemini_models:
-            st.warning("⚠️ No Gemini models found with generateContent support.")
+        if not all_models:
+            st.warning("⚠️ No models found.")
             return []
             
-        st.success(f"✅ Found {len(gemini_models)} available Gemini models!")
-        return gemini_models
+        st.success(f"✅ Found {len(all_models)} available models!")
+        return all_models
 
     except Exception as e:
-        st.error(f"❌ Error fetching Gemini models: {e}")
+        st.error(f"❌ Error fetching models: {e}")
         return []
     
 def admin_ui():
