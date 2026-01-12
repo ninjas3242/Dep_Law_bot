@@ -533,30 +533,37 @@ def get_gemini_response(prompt):
             error_msg = str(e).lower()
             if ("quota" in error_msg or "rate limit" in error_msg or "resource_exhausted" in error_msg or "429" in str(e)):
                 st.warning(f"⚠ Working model {working_model} quota exceeded, finding new model...")
+                st.session_state["exhausted_models"].add(working_model)
                 st.session_state["working_model"] = None
             else:
                 st.error(f"❌ Error with working model {working_model}: {e}")
                 st.session_state["working_model"] = None
     
-    # Need to find a working model
+    # Need to find a working model - skip exhausted ones
     configured_sequence = st.session_state["app_config"].get("gemini_model_sequence", [])
-    
-    # Get ALL available models only when needed
     all_available_models = get_available_gemini_models()
     if not all_available_models:
         st.error("❌ No Gemini models available.")
         return "❌ No Gemini models available."
     
-    # Create full sequence: configured models first, then remaining models
+    # Create full sequence and filter out exhausted models
     remaining_models = [m for m in all_available_models if m not in configured_sequence]
     full_sequence = configured_sequence + remaining_models
+    available_models = [m for m in full_sequence if m not in st.session_state["exhausted_models"]]
+    
+    if not available_models:
+        st.error(f"❌ All {len(full_sequence)} Gemini models quota exceeded.")
+        deepseek_response = get_deepseek_response(prompt, st.session_state["app_config"]["ollama_model"])
+        return f"[Response from: DeepSeek]\n\n{deepseek_response}"
     
     st.info(f"🔑 Configured Gemini API key")
-    st.info(f"📊 Searching through {len(full_sequence)} models for working one...")
+    exhausted_count = len(st.session_state["exhausted_models"])
+    if exhausted_count > 0:
+        st.info(f"🚫 Skipping {exhausted_count} exhausted models, trying {len(available_models)} remaining...")
     
-    for i, model in enumerate(full_sequence, 1):
+    for i, model in enumerate(available_models, 1):
         model_type = "configured" if model in configured_sequence else "additional"
-        st.info(f"⏳ Attempting {model} ({model_type} - Model {i}/{len(full_sequence)})...")
+        st.info(f"⏳ Attempting {model} ({model_type} - Model {i}/{len(available_models)})...")
         
         try:
             model_instance = genai.GenerativeModel(model)
@@ -564,13 +571,13 @@ def get_gemini_response(prompt):
                 prompt,
                 generation_config={"temperature": temperature}
             )
-            # Save this as working model for future use
             st.session_state["working_model"] = model
             st.success(f"✅ Found working model: **{model}** ({model_type})!")
             return f"[Response from: {model}]\n\n{response.text}"
         except Exception as e:
             error_msg = str(e).lower()
             if ("quota" in error_msg or "rate limit" in error_msg or "resource_exhausted" in error_msg or "429" in str(e)):
+                st.session_state["exhausted_models"].add(model)
                 st.warning(f"⚠ Quota exceeded for {model}, trying next...")
                 continue
             else:
