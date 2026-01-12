@@ -30,7 +30,11 @@ load_dotenv()
 
 # --- Configuration File for Gemini Sequence ---
 GEMINI_SEQUENCE_CONFIG_FILE = "gemini_sequence_config.json"
-DEFAULT_GEMINI_MODEL_SEQUENCE = ["gemini-1.5-pro-latest", "gemini-1.5-flash-latest"]
+DEFAULT_GEMINI_MODEL_SEQUENCE = [
+    "gemini-2.0-flash-exp",
+    "gemini-2.0-flash", 
+    "gemini-1.5-flash"
+]
     
 def load_gemini_sequence():
     if os.path.exists(GEMINI_SEQUENCE_CONFIG_FILE):
@@ -512,62 +516,48 @@ def get_gemini_response(prompt):
         return "❌ No internet connection."
 
     temperature = st.session_state["app_config"].get("temperature")
-    model_sequence = st.session_state["app_config"].get("gemini_model_sequence", [])
+    configured_sequence = st.session_state["app_config"].get("gemini_model_sequence", [])
     
-    if not model_sequence:
-        model_sequence = get_available_gemini_models()
-        if not model_sequence:
-            st.error("❌ No Gemini models available.")
-            return "❌ No Gemini models available."
-        st.session_state["app_config"]["gemini_model_sequence"] = model_sequence
-
-    # Check if all models are exhausted
-    available_models = [m for m in model_sequence if m not in st.session_state["exhausted_models"]]
-    if not available_models:
-        st.error(f"❌ All {len(model_sequence)} Gemini models quota exceeded.")
-        deepseek_response = get_deepseek_response(prompt, st.session_state["app_config"]["ollama_model"])
-        return f"[All Gemini models quota exceeded. Response from: DeepSeek]\n\n{deepseek_response}"
-
-    # Use working model if available, otherwise start with first available
-    working_model = st.session_state.get("working_model")
-    if working_model and working_model in available_models:
-        models_to_try = [working_model] + [m for m in available_models if m != working_model]
-    else:
-        models_to_try = available_models
+    # Get ALL available models
+    all_available_models = get_available_gemini_models()
+    if not all_available_models:
+        st.error("❌ No Gemini models available.")
+        return "❌ No Gemini models available."
     
-    # Debug info
-    if st.session_state["exhausted_models"]:
-        st.info(f"🚫 Skipping {len(st.session_state['exhausted_models'])} exhausted models: {list(st.session_state['exhausted_models'])[:3]}...")
+    # Create full sequence: configured models first, then remaining models
+    remaining_models = [m for m in all_available_models if m not in configured_sequence]
+    full_sequence = configured_sequence + remaining_models
     
-    for i, model in enumerate(models_to_try):
-        # Skip if already exhausted
-        if model in st.session_state["exhausted_models"]:
-            continue
-            
-        st.info(f"⏳ Attempting {model} (Model {model_sequence.index(model)+1}/{len(model_sequence)})...")
+    st.info(f"🔑 Configured Gemini API key")
+    st.info(f"📊 Will try {len(configured_sequence)} configured + {len(remaining_models)} additional models = {len(full_sequence)} total")
+    
+    for i, model in enumerate(full_sequence, 1):
+        # Show if this is a configured or additional model
+        model_type = "configured" if model in configured_sequence else "additional"
+        st.info(f"⏳ Attempting {model} ({model_type} - Model {i}/{len(full_sequence)})...")
+        
         try:
             model_instance = genai.GenerativeModel(model)
             response = model_instance.generate_content(
                 prompt,
                 generation_config={"temperature": temperature}
             )
-            st.session_state["working_model"] = model
-            st.success(f"✅ Response received from {model}!")
+            st.success(f"✅ Response received from **{model}** ({model_type})!")
             return f"[Response from: {model}]\n\n{response.text}"
         except Exception as e:
             error_msg = str(e).lower()
             if ("quota" in error_msg or "rate limit" in error_msg or "resource_exhausted" in error_msg or "429" in str(e)):
-                st.session_state["exhausted_models"].add(model)
-                st.warning(f"⚠ Quota/Rate limit exceeded for {model} (Model {model_sequence.index(model)+1}/{len(model_sequence)}), trying next model...")
-                if model == working_model:
-                    st.session_state["working_model"] = None
+                st.warning(f"⚠ Quota/Rate limit exceeded for {model} ({model_type} - Model {i}/{len(full_sequence)}), trying next model...")
+                continue
             else:
-                return f"❌ Error with {model}: {e}"
+                st.error(f"❌ Error with model {model}: {e}")
+                continue
 
-    # All models exhausted
-    st.error(f"❌ All {len(model_sequence)} Gemini models quota exceeded.")
+    # If ALL models failed
+    st.error(f"❌ All {len(full_sequence)} Gemini models quota exceeded.")
+    st.warning("⚠ All available Gemini models have failed. Switching to DeepSeek...")
     deepseek_response = get_deepseek_response(prompt, st.session_state["app_config"]["ollama_model"])
-    return f"[All Gemini models quota exceeded. Response from: DeepSeek]\n\n{deepseek_response}"
+    return f"[Response from: DeepSeek - {st.session_state['app_config']['ollama_model']}]\n\n{deepseek_response}"
 
 def get_deepseek_response(prompt, selected_model):
     if not check_internet_connection():
