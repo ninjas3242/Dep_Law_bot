@@ -538,6 +538,7 @@ def get_gemini_response(prompt):
         working_model = st.session_state["working_model"]
         if working_model not in st.session_state["exhausted_models"]:
             try:
+                st.info(f"🤖 Using model: {working_model}")
                 model_instance = genai.GenerativeModel(working_model)
                 response = model_instance.generate_content(
                     prompt,
@@ -549,7 +550,7 @@ def get_gemini_response(prompt):
                 if ("quota" in error_msg or "rate limit" in error_msg or "resource_exhausted" in error_msg or "429" in str(e)):
                     st.session_state["exhausted_models"].add(working_model)
                     st.session_state["working_model"] = None
-                    print(f"Model {working_model} quota exceeded, switching...")
+                    st.warning(f"⚠️ Model {working_model} quota exceeded, switching...")
                 else:
                     st.session_state["working_model"] = None
     
@@ -563,32 +564,35 @@ def get_gemini_response(prompt):
     
     if not available_models:
         if not st.session_state["quota_exceeded_shown"]:
-            print(f"All {len(configured_sequence)} models quota exceeded, using DeepSeek")
+            st.error(f"❌ All {len(configured_sequence)} models quota exceeded, switching to DeepSeek")
             st.session_state["quota_exceeded_shown"] = True
         deepseek_response = get_deepseek_response(prompt, st.session_state["app_config"]["ollama_model"])
         return f"[Response from: DeepSeek]\n\n{deepseek_response}"
     
     for model in available_models:
         try:
+            st.info(f"🤖 Trying model: {model}")
             model_instance = genai.GenerativeModel(model)
             response = model_instance.generate_content(
                 prompt,
                 generation_config={"temperature": temperature}
             )
             st.session_state["working_model"] = model
+            st.success(f"✅ Successfully using model: {model}")
             return f"[Response from: {model}]\n\n{response.text}"
         except Exception as e:
             error_msg = str(e).lower()
             if ("quota" in error_msg or "rate limit" in error_msg or "resource_exhausted" in error_msg or "429" in str(e)):
                 st.session_state["exhausted_models"].add(model)
-                print(f"Model {model} quota exceeded, trying next...")
+                st.warning(f"⚠️ Model {model} quota exceeded, trying next...")
                 continue
             else:
+                st.warning(f"⚠️ Model {model} failed, trying next...")
                 continue
 
     # If ALL models failed
     if not st.session_state["quota_exceeded_shown"]:
-        print(f"All {len(configured_sequence)} models quota exceeded, using DeepSeek")
+        st.error(f"❌ All {len(configured_sequence)} models quota exceeded, switching to DeepSeek")
         st.session_state["quota_exceeded_shown"] = True
     deepseek_response = get_deepseek_response(prompt, st.session_state["app_config"]["ollama_model"])
     return f"[Response from: DeepSeek]\n\n{deepseek_response}"
