@@ -1309,6 +1309,17 @@ def user_ui():
                     process_zip_file(uploaded_zip, selected_questions)
     # Show responses and download button after processing
     if st.session_state.get("show_zip_download", False):
+        # Add "Go to Top" button in sidebar when processing results are shown
+        with st.sidebar:
+            st.markdown("---")
+            if st.button("⬆️ Go to Top"):
+                js = '''
+                <script>
+                    window.parent.document.querySelector('.main').scrollTop = 0;
+                </script>
+                '''
+                st.components.v1.html(js, height=0)
+        
         st.markdown("---")
         st.subheader("📦 Download All Responses")
         zip_buffer = create_zip_and_download(st.session_state["app_config"]["output_folder"])
@@ -1443,35 +1454,6 @@ def create_zip_and_download(output_folder):
 
 # SOLUTION 6: Updated main function (remove the old create_zip_and_download call)
 def main():
-    # Add floating "Go to Top" button using components
-    st.markdown("""
-    <style>
-    .go-to-top {
-        position: fixed;
-        bottom: 20px;
-        right: 20px;
-        background-color: #ff4b4b;
-        color: white;
-        border: none;
-        border-radius: 50%;
-        width: 50px;
-        height: 50px;
-        font-size: 20px;
-        cursor: pointer;
-        z-index: 1000;
-        box-shadow: 0 2px 10px rgba(0,0,0,0.3);
-        text-decoration: none;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-    }
-    .go-to-top:hover {
-        background-color: #ff6b6b;
-    }
-    </style>
-    <a href="#" class="go-to-top">↑</a>
-    """, unsafe_allow_html=True)
-    
     if not st.session_state["logged_in"]:
         auth_section()
     else:
