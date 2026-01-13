@@ -328,7 +328,13 @@ def manage_user_api_keys():
     conn.close()
 
 def logout():
-    st.session_state["config_loaded"] = False
+    # Clear all session state on logout
+    keys_to_keep = ["show_login", "show_register", "show_forgot_password"]
+    keys_to_clear = [key for key in st.session_state.keys() if key not in keys_to_keep]
+    for key in keys_to_clear:
+        del st.session_state[key]
+    
+    # Reset essential states
     st.session_state["user"] = None
     st.session_state["logged_in"] = False
     st.session_state["user_role"] = None
@@ -512,7 +518,6 @@ def generate_prompt(extracted_text, selected_questions):
 
 def get_gemini_response(prompt):
     if not check_internet_connection():
-        st.error("❌ No internet connection. Cannot get Gemini response.")
         return "❌ No internet connection."
 
     temperature = st.session_state["app_config"].get("temperature")
@@ -520,51 +525,35 @@ def get_gemini_response(prompt):
     # Use working model if we found one that works
     if "working_model" in st.session_state and st.session_state["working_model"]:
         working_model = st.session_state["working_model"]
-        st.info(f"⏳ Using known working model: {working_model}...")
         try:
             model_instance = genai.GenerativeModel(working_model)
             response = model_instance.generate_content(
                 prompt,
                 generation_config={"temperature": temperature}
             )
-            st.success(f"✅ Response received from **{working_model}**!")
             return f"[Response from: {working_model}]\n\n{response.text}"
         except Exception as e:
             error_msg = str(e).lower()
             if ("quota" in error_msg or "rate limit" in error_msg or "resource_exhausted" in error_msg or "429" in str(e)):
-                st.warning(f"⚠ Working model {working_model} quota exceeded, finding new model...")
                 st.session_state["exhausted_models"].add(working_model)
                 st.session_state["working_model"] = None
             else:
-                st.error(f"❌ Error with working model {working_model}: {e}")
                 st.session_state["working_model"] = None
     
-    # Need to find a working model - skip exhausted ones
+    # Need to find a working model - use only configured sequence
     configured_sequence = st.session_state["app_config"].get("gemini_model_sequence", [])
-    all_available_models = get_available_gemini_models()
-    if not all_available_models:
-        st.error("❌ No Gemini models available.")
-        return "❌ No Gemini models available."
+    if not configured_sequence:
+        return "❌ No models configured."
     
-    # Create full sequence and filter out exhausted models
-    remaining_models = [m for m in all_available_models if m not in configured_sequence]
-    full_sequence = configured_sequence + remaining_models
-    available_models = [m for m in full_sequence if m not in st.session_state["exhausted_models"]]
+    # Filter out exhausted models
+    available_models = [m for m in configured_sequence if m not in st.session_state["exhausted_models"]]
     
     if not available_models:
-        st.error(f"❌ All {len(full_sequence)} Gemini models quota exceeded.")
+        st.error(f"❌ All {len(configured_sequence)} configured models quota exceeded.")
         deepseek_response = get_deepseek_response(prompt, st.session_state["app_config"]["ollama_model"])
         return f"[Response from: DeepSeek]\n\n{deepseek_response}"
     
-    st.info(f"🔑 Configured Gemini API key")
-    exhausted_count = len(st.session_state["exhausted_models"])
-    if exhausted_count > 0:
-        st.info(f"🚫 Skipping {exhausted_count} exhausted models, trying {len(available_models)} remaining...")
-    
-    for i, model in enumerate(available_models, 1):
-        model_type = "configured" if model in configured_sequence else "additional"
-        st.info(f"⏳ Attempting {model} ({model_type} - Model {i}/{len(available_models)})...")
-        
+    for model in available_models:
         try:
             model_instance = genai.GenerativeModel(model)
             response = model_instance.generate_content(
@@ -572,20 +561,17 @@ def get_gemini_response(prompt):
                 generation_config={"temperature": temperature}
             )
             st.session_state["working_model"] = model
-            st.success(f"✅ Found working model: **{model}** ({model_type})!")
             return f"[Response from: {model}]\n\n{response.text}"
         except Exception as e:
             error_msg = str(e).lower()
             if ("quota" in error_msg or "rate limit" in error_msg or "resource_exhausted" in error_msg or "429" in str(e)):
                 st.session_state["exhausted_models"].add(model)
-                st.warning(f"⚠ Quota exceeded for {model}, trying next...")
                 continue
             else:
-                st.error(f"❌ Error with model {model}: {e}")
                 continue
 
     # If ALL models failed
-    st.error(f"❌ All {len(full_sequence)} Gemini models quota exceeded.")
+    st.error(f"❌ All {len(configured_sequence)} configured models quota exceeded.")
     deepseek_response = get_deepseek_response(prompt, st.session_state["app_config"]["ollama_model"])
     return f"[Response from: DeepSeek]\n\n{deepseek_response}"
 
@@ -607,6 +593,29 @@ def get_deepseek_response(prompt, selected_model):
     except Exception as e:
         return f"❌ Error generating response: {str(e)}"
 
+def clear_processing_state():
+    """Clear all processing-related session state"""
+    keys_to_clear = [
+        "zip_responses", "show_zip_download", "processed_files_count",
+        "processing_stopped", "working_model", "exhausted_models"
+    ]
+    for key in keys_to_clear:
+        if key in st.session_state:
+            del st.session_state[key]
+    
+    # Reset exhausted models
+    st.session_state["exhausted_models"] = set()
+
+def clear_output_folder():
+    """Clear output folder of previous results"""
+    output_folder = st.session_state["app_config"]["output_folder"]
+    if os.path.exists(output_folder):
+        for file in os.listdir(output_folder):
+            if file.endswith(".txt"):
+                try:
+                    os.remove(os.path.join(output_folder, file))
+                except:
+                    pass
 def read_txt_file(file_path):
     """
     Reads a text file and returns its content.
@@ -618,34 +627,24 @@ def read_txt_file(file_path):
         # Try another encoding if UTF-8 fails
         with open(file_path, "r", encoding="latin-1") as f:
             return f.read()
-        
-
-
-# SOLUTION 1: Fix file naming in process_html function
-# Replace the existing process_html function with this updated version
 
 def process_html(file_path, file_name, selected_questions):
     if not check_internet_connection():
-        st.error("❌ No internet connection. Cannot process file.")
         return None
 
     config = st.session_state["app_config"]
     output_folder = config["output_folder"]
-    input_folder = config["input_folder"]
     completed_folder = config["completed_folder"]
 
-    st.info(f"ℹ️ Processing file: {file_path}")
-
-    output_subfolder = output_folder
-    if not os.path.exists(output_subfolder):
-        os.makedirs(output_subfolder, exist_ok=True)
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder, exist_ok=True)
 
     # Determine file type and process accordingly
     file_extension = os.path.splitext(file_name)[1].lower()
     
     if file_extension in ['.html', '.htm']:
         try:
-            with open(file_path, "r", encoding="utf-8",errors="ignore") as f:
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                 file_content = f.read()
         except UnicodeDecodeError:
             with open(file_path, "r", encoding="latin-1") as f:
@@ -654,13 +653,11 @@ def process_html(file_path, file_name, selected_questions):
     elif file_extension in ['.txt']:
         extracted_text = read_txt_file(file_path)
     else:
-        st.error(f"❌ Unsupported file type: {file_extension}")
         return None
 
     formatted_prompt = generate_prompt(extracted_text, selected_questions)
 
     response = None
-    error_occurred = False
     try:
         if config["model_provider"] == "Google Gemini":
             if not st.session_state.get("gemini_api_configured", False):
@@ -668,23 +665,17 @@ def process_html(file_path, file_name, selected_questions):
                 if api_key:
                     genai.configure(api_key=api_key)
                     st.session_state["gemini_api_configured"] = True
-                    st.info("🔑 Configured Gemini API key")
                 else:
-                    st.error("❌ No API key available. Please contact admin.")
                     response = "Error: No API key available."
-                    error_occurred = True
-            if not error_occurred:
+            if not response:
                 response = get_gemini_response(formatted_prompt)
         else:
             response = get_deepseek_response(formatted_prompt, config["ollama_model"])
     except Exception as e:
-        st.error(f"❌ Error generating response: {e}")
         response = f"Error: Could not process file due to: {e}"
-        error_occurred = True
 
     txt_file_name = extract_filename(file_name)
-    txt_output_path = os.path.join(output_subfolder, txt_file_name)
-    # Always write a response file, even if error
+    txt_output_path = os.path.join(output_folder, txt_file_name)
     with open(txt_output_path, "w", encoding="utf-8") as f:
         f.write(response if response else "Error: No response generated.")
 
@@ -695,11 +686,10 @@ def process_html(file_path, file_name, selected_questions):
     try:
         destination_path = os.path.join(completed_folder, file_name)
         shutil.move(file_path, destination_path)
-        st.success(f"✅ Moved processed file to: {destination_path}")
     except Exception as e:
-        st.error(f"❌ Error moving processed file: {e}")
+        pass
 
-    return response, txt_file_name  # Return both response and clean filename
+    return response, txt_file_name
 
 # SOLUTION 2: Updated process_html_in_folder function
 def process_html_in_folder(file_path, file_name, selected_questions, destination_subfolder):
@@ -1263,6 +1253,10 @@ def user_ui():
                 if uploaded_file is None:
                     st.error("⚠️ Please upload an HTML or TXT file before analyzing.")
                 else:
+                    # Clear previous results
+                    clear_processing_state()
+                    clear_output_folder()
+                    
                     try:
                         file_name = uploaded_file.name
                         try:
@@ -1288,20 +1282,17 @@ def user_ui():
                                 mime="text/plain",
                                 key="download_single_file"
                             )
-                            st.session_state["processed_files_count"] += 1
+                            st.session_state["processed_files_count"] = 1
                             st.session_state["show_zip_download"] = True
                         else:
                             st.error("❌ Document analysis failed. See error messages above.")
                     except Exception as e:
-                        st.session_state["upload_error"] = True
-                        st.error(f"❌ Error during file processing Try Again: {e}")
-                        st.rerun()
+                        st.error(f"❌ Error during file processing: {e}")
         elif processing_mode == "Upload Zip of Files":
             if st.button("🚀 Process Zip"):
                 if uploaded_zip is None:
                     st.error("⚠️ Please upload a ZIP file before processing.")
                 else:
-                    st.session_state["processing_stopped"] = False  # Reset stop flag
                     process_zip_file(uploaded_zip, selected_questions)
     # Show responses and download button after processing
     if st.session_state.get("show_zip_download", False):
@@ -1330,12 +1321,11 @@ def user_ui():
 
 # SOLUTION 4: Updated process_zip_file function with stop functionality
 def process_zip_file(zip_file, selected_questions):
+    # Clear previous results
+    clear_processing_state()
+    clear_output_folder()
+    
     temp_dir = tempfile.mkdtemp()
-    output_folder = st.session_state["app_config"]["output_folder"]
-    if os.path.exists(output_folder):
-        for f in os.listdir(output_folder):
-            if f.endswith(".txt"):
-                os.remove(os.path.join(output_folder, f))
     try:
         with zipfile.ZipFile(zip_file, 'r') as zip_ref:
             zip_ref.extractall(temp_dir)
@@ -1348,34 +1338,25 @@ def process_zip_file(zip_file, selected_questions):
             st.warning("⚠ No supported files (.html/.htm/.txt) found in the zip.")
             return
         
-        # Initialize processing state
         st.session_state["zip_responses"] = []
         st.session_state["processing_stopped"] = False
         
-        # Create stop button placeholder
-        stop_placeholder = st.empty()
+        # Create progress display
         progress_placeholder = st.empty()
+        status_placeholder = st.empty()
         
         total_files = len(supported_files)
         for i, file_path in enumerate(supported_files):
-            # Check if stop was requested
             if st.session_state.get("processing_stopped", False):
-                st.warning(f"⏹️ Processing stopped. {i}/{total_files} files processed.")
                 break
                 
-            # Show stop button and progress
-            with stop_placeholder.container():
-                col1, col2 = st.columns([1, 4])
-                with col1:
-                    if st.button("⏹️ Stop", key=f"stop_btn_{i}"):
-                        st.session_state["processing_stopped"] = True
-                        st.rerun()
-                with col2:
-                    st.progress((i + 1) / total_files, text=f"Processing {i+1}/{total_files} files")
+            # Update progress
+            with progress_placeholder.container():
+                st.progress((i + 1) / total_files, text=f"Processing {i+1}/{total_files} files")
             
             original_name = os.path.basename(file_path)
-            with progress_placeholder.container():
-                st.info(f"📄 Processing file: {original_name}")
+            with status_placeholder.container():
+                st.info(f"📄 {original_name}")
             
             result = process_html(file_path, original_name, selected_questions)
             if result:
@@ -1392,17 +1373,12 @@ def process_zip_file(zip_file, selected_questions):
                 "clean_filename": clean_filename,
                 "original_name": original_name
             })
-            st.session_state["processed_files_count"] += 1
         
-        # Clear stop button and progress
-        stop_placeholder.empty()
         progress_placeholder.empty()
+        status_placeholder.empty()
         
         st.session_state["show_zip_download"] = True
-        if st.session_state.get("processing_stopped", False):
-            st.success(f"⏹️ Processing stopped. {len(st.session_state['zip_responses'])} files ready for download.")
-        else:
-            st.success("🎉 Process Completed")
+        st.success(f"🎉 Processed {len(st.session_state['zip_responses'])} files")
     finally:
         shutil.rmtree(temp_dir)
         st.session_state["processing_stopped"] = False
