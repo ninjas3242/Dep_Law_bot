@@ -928,7 +928,7 @@ def admin_ui():
 
         if model_provider == "Google Gemini":
         # Dynamically fetch available Gemini models
-            col1, col2 = st.columns([3, 1])
+            col1, col2, col3 = st.columns([2, 1, 1])
             with col1:
                 if "available_gemini_models" not in st.session_state:
                     st.session_state["available_gemini_models"] = get_available_gemini_models()
@@ -942,6 +942,12 @@ def admin_ui():
                         st.success(f"✅ Auto-configured ALL {len(st.session_state['available_gemini_models'])} models!")
                         st.info(f"📋 Models: {', '.join(st.session_state['available_gemini_models'][:5])}{'...' if len(st.session_state['available_gemini_models']) > 5 else ''}")
                         st.rerun()
+            with col3:
+                if st.button("🗑️ Reset Models"):
+                    st.session_state["app_config"]["gemini_model_sequence"] = []
+                    st.session_state["model_sequence_inputs"] = [None]
+                    st.success("✅ Model sequence reset!")
+                    st.rerun()
             
             gemini_models = st.session_state["available_gemini_models"]
             
