@@ -1334,6 +1334,14 @@ def user_ui():
                     mime="text/plain",
                     key=f"download_{resp['original_name']}"
                 )
+        
+        # Reset button at the end
+        st.markdown("---")
+        if st.button("🔄 Reset Files & Responses"):
+            clear_processing_state()
+            clear_output_folder()
+            st.success("✅ Files and responses cleared!")
+            st.rerun()
 
 # SOLUTION 4: Updated process_zip_file function with stop functionality
 def process_zip_file(zip_file, selected_questions):
@@ -1435,6 +1443,31 @@ def create_zip_and_download(output_folder):
 
 # SOLUTION 6: Updated main function (remove the old create_zip_and_download call)
 def main():
+    # Add floating "Go to Top" button
+    st.markdown("""
+    <style>
+    .go-to-top {
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        background-color: #ff4b4b;
+        color: white;
+        border: none;
+        border-radius: 50%;
+        width: 50px;
+        height: 50px;
+        font-size: 20px;
+        cursor: pointer;
+        z-index: 1000;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+    }
+    .go-to-top:hover {
+        background-color: #ff6b6b;
+    }
+    </style>
+    <button class="go-to-top" onclick="window.scrollTo(0,0)">↑</button>
+    """, unsafe_allow_html=True)
+    
     if not st.session_state["logged_in"]:
         auth_section()
     else:
