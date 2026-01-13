@@ -99,8 +99,11 @@ if "exhausted_models" not in st.session_state:
     st.session_state["exhausted_models"] = set()
 if "model_sequence_inputs" not in st.session_state:
     st.session_state["model_sequence_inputs"] = st.session_state["app_config"].get("gemini_model_sequence", []) + [None]
-if "gemini_models_last_fetch" not in st.session_state:
-    st.session_state["gemini_models_last_fetch"] = 0
+# Session state initialization - remove duplicate
+if "exhausted_models" not in st.session_state:
+    st.session_state["exhausted_models"] = set()
+if "gemini_api_configured" not in st.session_state:
+    st.session_state["gemini_api_configured"] = False
 # Function to check internet connection
 def check_internet_connection():
     """Checks for internet connection by trying to reach Google."""
@@ -520,25 +523,30 @@ def get_gemini_response(prompt):
     if not check_internet_connection():
         return "❌ No internet connection."
 
-    temperature = st.session_state["app_config"].get("temperature")
+    temperature = st.session_state["app_config"].get("temperature", 0.5)
+    
+    # Initialize exhausted_models if not exists
+    if "exhausted_models" not in st.session_state:
+        st.session_state["exhausted_models"] = set()
     
     # Use working model if we found one that works
     if "working_model" in st.session_state and st.session_state["working_model"]:
         working_model = st.session_state["working_model"]
-        try:
-            model_instance = genai.GenerativeModel(working_model)
-            response = model_instance.generate_content(
-                prompt,
-                generation_config={"temperature": temperature}
-            )
-            return f"[Response from: {working_model}]\n\n{response.text}"
-        except Exception as e:
-            error_msg = str(e).lower()
-            if ("quota" in error_msg or "rate limit" in error_msg or "resource_exhausted" in error_msg or "429" in str(e)):
-                st.session_state["exhausted_models"].add(working_model)
-                st.session_state["working_model"] = None
-            else:
-                st.session_state["working_model"] = None
+        if working_model not in st.session_state["exhausted_models"]:
+            try:
+                model_instance = genai.GenerativeModel(working_model)
+                response = model_instance.generate_content(
+                    prompt,
+                    generation_config={"temperature": temperature}
+                )
+                return f"[Response from: {working_model}]\n\n{response.text}"
+            except Exception as e:
+                error_msg = str(e).lower()
+                if ("quota" in error_msg or "rate limit" in error_msg or "resource_exhausted" in error_msg or "429" in str(e)):
+                    st.session_state["exhausted_models"].add(working_model)
+                    st.session_state["working_model"] = None
+                else:
+                    st.session_state["working_model"] = None
     
     # Need to find a working model - use only configured sequence
     configured_sequence = st.session_state["app_config"].get("gemini_model_sequence", [])
@@ -577,9 +585,9 @@ def get_gemini_response(prompt):
 
 def get_deepseek_response(prompt, selected_model):
     if not check_internet_connection():
-        st.error("❌ No internet connection. Cannot get DeepSeek response.")
         return "❌ No internet connection."
-    temperature = st.session_state["app_config"].get("temperature") # Get temperature
+    
+    temperature = st.session_state["app_config"].get("temperature", 0.5)
     try:
         response = ollama.chat(
             model=selected_model,
@@ -589,7 +597,7 @@ def get_deepseek_response(prompt, selected_model):
         response_content = response['message']['content']
         if '<think>' in response_content:
             response_content = response_content.split('</think>')[-1].strip()
-        return f"[Response from: DeepSeek - {selected_model}]\n\n{response_content}" # Add model name
+        return response_content
     except Exception as e:
         return f"❌ Error generating response: {str(e)}"
 
@@ -694,14 +702,10 @@ def process_html(file_path, file_name, selected_questions):
 # SOLUTION 2: Updated process_html_in_folder function
 def process_html_in_folder(file_path, file_name, selected_questions, destination_subfolder):
     if not check_internet_connection():
-        st.error("❌ No internet connection. Cannot process HTML.")
         return None
 
     config = st.session_state["app_config"]
     output_folder = config["output_folder"]
-
-    st.info(f"ℹ️ Processing file: {file_path}")
-
     subfolder_name = os.path.basename(os.path.dirname(file_path))
     output_subfolder = os.path.join(output_folder, subfolder_name)
 
@@ -713,7 +717,7 @@ def process_html_in_folder(file_path, file_name, selected_questions, destination
     
     if file_extension in ['.html', '.htm']:
         try:
-            with open(file_path, "r", encoding="utf-8",) as f:
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                 file_content = f.read()
         except UnicodeDecodeError:
             with open(file_path, "r", encoding="latin-1") as f:
@@ -722,13 +726,11 @@ def process_html_in_folder(file_path, file_name, selected_questions, destination
     elif file_extension in ['.txt']:
         extracted_text = read_txt_file(file_path)
     else:
-        st.error(f"❌ Unsupported file type: {file_extension}")
         return None
 
     formatted_prompt = generate_prompt(extracted_text, selected_questions)
 
     response = None
-    error_occurred = False
     try:
         if config["model_provider"] == "Google Gemini":
             if not st.session_state.get("gemini_api_configured", False):
@@ -736,35 +738,28 @@ def process_html_in_folder(file_path, file_name, selected_questions, destination
                 if api_key:
                     genai.configure(api_key=api_key)
                     st.session_state["gemini_api_configured"] = True
-                    st.info("🔑 Configured Gemini API key")
                 else:
-                    st.error("❌ No API key available. Please contact admin.")
                     response = "Error: No API key available."
-                    error_occurred = True
-            if not error_occurred:
+            if not response:
                 response = get_gemini_response(formatted_prompt)
         else:
             response = get_deepseek_response(formatted_prompt, config["ollama_model"])
     except Exception as e:
-        st.error(f"❌ Error generating response: {e}")
         response = f"Error: Could not process file due to: {e}"
-        error_occurred = True
 
     txt_file_name = extract_filename(file_name)
     txt_output_path = os.path.join(output_subfolder, txt_file_name)
-    # Always write a response file, even if error
     with open(txt_output_path, "w", encoding="utf-8") as f:
         f.write(response if response else "Error: No response generated.")
 
-    # Move processed HTML file to completed subfolder instead of root completed folder
+    # Move processed HTML file to completed subfolder
     try:
         destination_path = os.path.join(destination_subfolder, file_name)
-        shutil.copy2(file_path, destination_path)  # Copy the file to destination first
-        st.success(f"✅ Copied processed file to: {destination_path}")
+        shutil.copy2(file_path, destination_path)
     except Exception as e:
-        st.error(f"❌ Error copying processed file: {e}")
+        pass
 
-    return response, txt_file_name  # Return both response and clean filename
+    return response, txt_file_name
     
 def process_folder(folder_path, selected_questions):
     if not check_internet_connection():
@@ -836,9 +831,8 @@ def process_folder(folder_path, selected_questions):
     
 
 def get_available_gemini_models():
-    """Dynamically fetch ALL available models from the Google Generative AI API."""
+    """Dynamically fetch available Gemini models from the Google Generative AI API."""
     if not check_internet_connection():
-        st.error("❌ No internet connection. Cannot fetch models.")
         return []
     
     try:
@@ -848,25 +842,26 @@ def get_available_gemini_models():
             # Try to get from user session if available
             api_key = st.session_state["user"].get("api_key") if "user" in st.session_state else None
             if not api_key:
-                st.warning("⚠️ No API key available. Cannot fetch models.")
                 return []
         
         # Configure the API with the available key
         genai.configure(api_key=api_key)
         
-        # Get ALL available models without filtering
+        # Get available models and filter for Gemini models with generateContent support
         models = genai.list_models()
-        all_models = [model.name.split('/')[-1] for model in models]
+        gemini_models = []
+        for model in models:
+            model_name = model.name.split('/')[-1]
+            if ('gemini' in model_name.lower() and 
+                hasattr(model, 'supported_generation_methods') and 
+                'generateContent' in model.supported_generation_methods):
+                gemini_models.append(model_name)
         
-        # Sort models for better organization
-        all_models.sort()
+        gemini_models.sort()
         
-        if not all_models:
-            st.warning("⚠️ No models found.")
-            return []
-            
-        st.success(f"✅ Found {len(all_models)} available models!")
-        return all_models
+        if gemini_models:
+            st.success(f"✅ Found {len(gemini_models)} available Gemini models!")
+        return gemini_models
 
     except Exception as e:
         st.error(f"❌ Error fetching models: {e}")
@@ -1422,20 +1417,15 @@ def main():
     if not st.session_state["logged_in"]:
         auth_section()
     else:
-        # ✅ Load config from Supabase on refresh after login
+        # Load config from Supabase on refresh after login
         if "config_loaded" not in st.session_state:
             load_configuration()
-            st.session_state["config_loaded"] = True  # Prevent loading it repeatedly
+            st.session_state["config_loaded"] = True
 
         if st.session_state["user_role"] == "admin":
             admin_ui()
         else:
             user_ui()
-
-
-    # Allow download of all outputs as a single ZIP
-    if st.session_state["app_config"]["output_folder"]:
-        create_zip_and_download(st.session_state["app_config"]["output_folder"])
 
 
 if __name__ == "__main__":
