@@ -1311,6 +1311,18 @@ def user_ui():
     if st.session_state.get("show_zip_download", False):
         st.markdown("---")
         st.subheader("📦 Download All Responses")
+        zip_buffer = create_zip_and_download(st.session_state["app_config"]["output_folder"])
+        if zip_buffer:
+            st.download_button(
+                label="📦 Download All Responses as ZIP",
+                data=zip_buffer,
+                file_name="all_responses.zip",
+                mime="application/zip",
+                key="main_zip_download"
+            )
+        
+        st.markdown("---")
+        
         # Show all responses from session state
         if "zip_responses" in st.session_state:
             for resp in st.session_state["zip_responses"]:
@@ -1322,15 +1334,6 @@ def user_ui():
                     mime="text/plain",
                     key=f"download_{resp['original_name']}"
                 )
-        zip_buffer = create_zip_and_download(st.session_state["app_config"]["output_folder"])
-        if zip_buffer:
-            st.download_button(
-                label="📦 Download All Responses as ZIP",
-                data=zip_buffer,
-                file_name="all_responses.zip",
-                mime="application/zip",
-                key="main_zip_download"
-            )
 
 # SOLUTION 4: Updated process_zip_file function with stop functionality
 def process_zip_file(zip_file, selected_questions):
