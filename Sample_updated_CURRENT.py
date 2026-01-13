@@ -549,6 +549,7 @@ def get_gemini_response(prompt):
                 if ("quota" in error_msg or "rate limit" in error_msg or "resource_exhausted" in error_msg or "429" in str(e)):
                     st.session_state["exhausted_models"].add(working_model)
                     st.session_state["working_model"] = None
+                    print(f"Model {working_model} quota exceeded, switching...")
                 else:
                     st.session_state["working_model"] = None
     
@@ -562,7 +563,7 @@ def get_gemini_response(prompt):
     
     if not available_models:
         if not st.session_state["quota_exceeded_shown"]:
-            st.error(f"❌ All {len(configured_sequence)} configured models quota exceeded.")
+            print(f"All {len(configured_sequence)} models quota exceeded, using DeepSeek")
             st.session_state["quota_exceeded_shown"] = True
         deepseek_response = get_deepseek_response(prompt, st.session_state["app_config"]["ollama_model"])
         return f"[Response from: DeepSeek]\n\n{deepseek_response}"
@@ -580,13 +581,14 @@ def get_gemini_response(prompt):
             error_msg = str(e).lower()
             if ("quota" in error_msg or "rate limit" in error_msg or "resource_exhausted" in error_msg or "429" in str(e)):
                 st.session_state["exhausted_models"].add(model)
+                print(f"Model {model} quota exceeded, trying next...")
                 continue
             else:
                 continue
 
     # If ALL models failed
     if not st.session_state["quota_exceeded_shown"]:
-        st.error(f"❌ All {len(configured_sequence)} configured models quota exceeded.")
+        print(f"All {len(configured_sequence)} models quota exceeded, using DeepSeek")
         st.session_state["quota_exceeded_shown"] = True
     deepseek_response = get_deepseek_response(prompt, st.session_state["app_config"]["ollama_model"])
     return f"[Response from: DeepSeek]\n\n{deepseek_response}"
@@ -840,7 +842,7 @@ def process_folder(folder_path, selected_questions):
     
 
 def get_available_gemini_models():
-    """Dynamically fetch available Gemini models from the Google Generative AI API."""
+    """Dynamically fetch ALL available models from the Google Generative AI API."""
     if not check_internet_connection():
         return []
     
@@ -856,21 +858,18 @@ def get_available_gemini_models():
         # Configure the API with the available key
         genai.configure(api_key=api_key)
         
-        # Get available models and filter for Gemini models with generateContent support
+        # Get ALL models - no filtering at all
         models = genai.list_models()
-        gemini_models = []
+        all_models = []
         for model in models:
             model_name = model.name.split('/')[-1]
-            if ('gemini' in model_name.lower() and 
-                hasattr(model, 'supported_generation_methods') and 
-                'generateContent' in model.supported_generation_methods):
-                gemini_models.append(model_name)
+            all_models.append(model_name)
         
-        gemini_models.sort()
+        all_models.sort()
         
-        if gemini_models:
-            st.success(f"✅ Found {len(gemini_models)} available Gemini models!")
-        return gemini_models
+        if all_models:
+            st.success(f"✅ Found {len(all_models)} total models!")
+        return all_models
 
     except Exception as e:
         st.error(f"❌ Error fetching models: {e}")
