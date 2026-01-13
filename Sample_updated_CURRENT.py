@@ -1443,7 +1443,7 @@ def create_zip_and_download(output_folder):
 
 # SOLUTION 6: Updated main function (remove the old create_zip_and_download call)
 def main():
-    # Add floating "Go to Top" button
+    # Add floating "Go to Top" button using components
     st.markdown("""
     <style>
     .go-to-top {
@@ -1460,12 +1460,16 @@ def main():
         cursor: pointer;
         z-index: 1000;
         box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+        text-decoration: none;
+        display: flex;
+        align-items: center;
+        justify-content: center;
     }
     .go-to-top:hover {
         background-color: #ff6b6b;
     }
     </style>
-    <button class="go-to-top" onclick="window.scrollTo(0,0)">↑</button>
+    <a href="#" class="go-to-top">↑</a>
     """, unsafe_allow_html=True)
     
     if not st.session_state["logged_in"]:
